@@ -815,8 +815,6 @@ ui.pinForm.addEventListener('submit', async (e) => {
       const opt = document.createElement('option');
       opt.value = group; opt.textContent = group;
       ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
-      saveLocalSettings();
-      renderFilterPanel();
     }
   }
 
@@ -827,16 +825,20 @@ ui.pinForm.addEventListener('submit', async (e) => {
     
     // Save chosen color to global lookup
     state.speciesColors[species] = state.selectedNewColor;
-    saveLocalSettings();
-
     if (!state.customSpecies.includes(species)) {
       state.customSpecies.push(species);
       const opt = document.createElement('option');
       opt.value = species; opt.textContent = species;
       ui.treeSpecies.insertBefore(opt, ui.treeSpecies.lastElementChild);
-      saveLocalSettings();
     }
   }
+  
+  // 新しくピンを置いた時は、そのグループを必ず「表示ON(フィルター通過)」の状態にする
+  if (!state.visibleGroups.includes(group)) {
+    state.visibleGroups.push(group);
+  }
+  // 全ての設定変更をまとめてセーブ
+  saveLocalSettings();
   
   const label = ui.treeLabel.value.trim();
   let pinData;
@@ -860,13 +862,23 @@ ui.pinForm.addEventListener('submit', async (e) => {
       label,
       photo: state.currentPinPhoto
     };
-    state.pins.push(pinData);
   }
   
   if (pinData) {
-    ui.loader.classList.remove('hidden');
-    await saveDBItem('pins', pinData);
-    ui.loader.classList.add('hidden');
+    try {
+      ui.loader.classList.remove('hidden');
+      await saveDBItem('pins', pinData);
+      
+      // DBに無事保存できた場合のみ、画面描画用の配列に追加
+      if (!state.activePinId && state.tempClickPos) {
+        state.pins.push(pinData);
+      }
+    } catch(err) {
+      console.error(err);
+      alert('【保存エラー】端末の容量不足、またはLINE等のアプリ内ブラウザ制限の可能性があります。SafariやChromeブラウザで開き直してください。');
+    } finally {
+      ui.loader.classList.add('hidden');
+    }
   }
 
   renderFilterPanel();
