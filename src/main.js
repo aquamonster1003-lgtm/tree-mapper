@@ -542,6 +542,7 @@ ui.mapUploadBtn.addEventListener('change', async (e) => {
 
 // --- Pan and Zoom Logic ---
 let isDragging = false, startPos = { x: 0, y: 0 }, lastTouches = [];
+let touchStartPos = { x: 0, y: 0 };
 
 function updateTransform() {
   ui.mapWrapper.style.transform = `translate(${state.transform.x}px, ${state.transform.y}px) scale(${state.transform.scale})`;
@@ -562,18 +563,25 @@ ui.viewerContainer.addEventListener('touchstart', (e) => {
   if (e.touches.length <= 2) e.preventDefault(); 
   isDragging = true; state.hasMoved = false;
   lastTouches = Array.from(e.touches);
+  if (lastTouches.length === 1) {
+    touchStartPos = { x: lastTouches[0].clientX, y: lastTouches[0].clientY };
+  }
 }, { passive: false });
 
 ui.viewerContainer.addEventListener('touchmove', (e) => {
   if (!isDragging) return;
   e.preventDefault();
-  state.hasMoved = true;
   const currentTouches = Array.from(e.touches);
 
   if (currentTouches.length === 1 && lastTouches.length === 1) {
+    if (!state.hasMoved) {
+      const dist = Math.hypot(currentTouches[0].clientX - touchStartPos.x, currentTouches[0].clientY - touchStartPos.y);
+      if (dist > 8) state.hasMoved = true;
+    }
     state.transform.x += currentTouches[0].clientX - lastTouches[0].clientX;
     state.transform.y += currentTouches[0].clientY - lastTouches[0].clientY;
   } else if (currentTouches.length === 2 && lastTouches.length === 2) {
+    state.hasMoved = true;
     const currentDist = getDistance(currentTouches[0], currentTouches[1]);
     const lastDist = getDistance(lastTouches[0], lastTouches[1]);
     let newScale = state.transform.scale * (currentDist / lastDist);
@@ -601,12 +609,17 @@ ui.viewerContainer.addEventListener('touchend', (e) => {
 
 ui.viewerContainer.addEventListener('mousedown', (e) => {
   if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.filter-panel')) return;
-  isDragging = true; state.hasMoved = false; startPos = { x: e.clientX, y: e.clientY };
+  isDragging = true; state.hasMoved = false; 
+  startPos = { x: e.clientX, y: e.clientY };
+  touchStartPos = { x: e.clientX, y: e.clientY };
 });
 
 window.addEventListener('mousemove', (e) => {
   if (!isDragging) return;
-  state.hasMoved = true;
+  if (!state.hasMoved) {
+    const dist = Math.hypot(e.clientX - touchStartPos.x, e.clientY - touchStartPos.y);
+    if (dist > 8) state.hasMoved = true;
+  }
   state.transform.x += e.clientX - startPos.x;
   state.transform.y += e.clientY - startPos.y;
   startPos = { x: e.clientX, y: e.clientY };
