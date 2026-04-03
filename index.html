@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>Tree Mapper</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <!-- App Container -->
+    <div id="app" class="app-container">
+      
+      <!-- General Loading overlay -->
+      <div id="loading-overlay" class="loader-backdrop hidden">
+        <div class="loader-spinner"></div>
+      </div>
+
+      <!-- Upload Screen (for when map is empty) -->
+      <div id="upload-screen" class="glass-panel centered-screen hidden">
+        <h1 class="title">新しいマップ</h1>
+        <p class="subtitle">マップ画像をアップロードして開始</p>
+        <label for="map-upload" class="upload-btn primary-btn">
+          <span>画像をアップロード</span>
+          <input type="file" id="map-upload" accept="image/*" hidden />
+        </label>
+        
+        <div style="margin-top: 2rem; border-top: 1px solid rgba(0,0,0,0.1); padding-top: 1rem;">
+          <p style="font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem;">他の人のデータを開く場合はこちら</p>
+          <button id="upload-settings-btn" class="btn secondary-btn" style="font-size: 0.9rem;">
+            ⚙️ データ管理を開く
+          </button>
+        </div>
+      </div>
+
+      <!-- Map Screen -->
+      <div id="map-screen" class="map-screen hidden">
+        <!-- Floating Header -->
+        <header class="glass-header">
+          <div class="header-content">
+            <div class="map-selector-wrapper">
+              <select id="map-selector" class="map-select" aria-label="マップの選択">
+                <!-- Map options injected via JS -->
+              </select>
+            </div>
+            
+            <div class="header-controls">
+              <button id="filter-btn" class="icon-btn" aria-label="フィルター" title="表示グループ切り替え">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
+              </button>
+              <button id="settings-btn" class="icon-btn" aria-label="設定" title="データ管理">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+              </button>
+              <button id="reset-map-btn" class="icon-btn" aria-label="リセット" title="このマップを削除">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="10" y1="11" x2="10" y2="17"/><line x1="14" y1="11" x2="14" y2="17"/></svg>
+              </button>
+            </div>
+          </div>
+        </header>
+
+        <!-- Filter Panel -->
+        <div id="filter-panel" class="filter-panel glass-panel hidden">
+          <h3>表示するグループ</h3>
+          <div id="filter-list">
+            <!-- Checkboxes injected here -->
+          </div>
+        </div>
+
+        <!-- Viewer Container for Pan/Zoom -->
+        <div id="viewer-container" class="viewer-container">
+          <div id="map-wrapper" class="map-wrapper">
+            <img id="map-image" src="" alt="Map" draggable="false" />
+            <div id="pins-container"></div>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Modal: Add or Edit Pin -->
+      <div id="pin-modal-backdrop" class="modal-backdrop hidden">
+        <div class="modal-content glass-panel" style="max-height: 90vh; overflow-y: auto;">
+          <h3 id="modal-title">樹木を追加</h3>
+          
+          <form id="pin-form">
+            <!-- Map photo attachment -->
+            <div class="form-group photo-upload-group">
+              <label>写真 (自動圧縮されます)</label>
+              <div class="photo-preview-box" id="photo-preview-box">
+                <img id="pin-photo-preview" src="" class="hidden" alt="Pin Photo Preview" />
+                <div class="photo-placeholder" id="photo-placeholder">
+                  <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>
+                  <span>タップして写真を添付</span>
+                </div>
+                <input type="file" id="pin-photo" accept="image/*" />
+              </div>
+              <button type="button" id="remove-photo-btn" class="icon-btn danger-text hidden" style="font-size: 0.8rem; padding: 4px; margin-top: 4px;">
+                写真を削除
+              </button>
+            </div>
+
+            <!-- Group Selection -->
+            <div class="form-group">
+              <label for="pin-group">グループ</label>
+              <select id="pin-group" name="group" required>
+                <option value="デフォルト">デフォルト (未分類)</option>
+                <option value="__add_new__">+ 新しいグループを作成...</option>
+              </select>
+            </div>
+            
+            <div class="form-group" id="new-group-wrapper" style="display: none;">
+              <label for="new-group">新しいグループ名</label>
+              <input type="text" id="new-group" name="new-group" placeholder="例: グループA, 北エリアなど" />
+            </div>
+
+            <!-- Species Selection -->
+            <div class="form-group">
+              <label for="tree-species">樹木の種類</label>
+              <select id="tree-species" name="species" required>
+                <option value="shirakashi">シラカシ</option>
+                <option value="keyaki">ケヤキ</option>
+                <option value="__add_new__">+ 新しい種類を追加...</option>
+              </select>
+            </div>
+            
+            <div class="form-group" id="new-species-group" style="display: none;">
+              <label for="new-species">新しい種類名</label>
+              <input type="text" id="new-species" name="new-species" placeholder="例: サクラ" />
+              <!-- Color Palette Container -->
+              <div id="species-color-group" style="margin-top: 1rem;">
+                <label style="font-size:0.8rem;">ピンの色 (すでに使用されている色は選べません)</label>
+                <div id="species-color-palette" class="color-palette">
+                  <!-- JS injected swatches -->
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="tree-label">メモ・ラベル (任意)</label>
+              <textarea id="tree-label" name="label" rows="2" placeholder="樹木の状態や特徴など"></textarea>
+            </div>
+
+            <div class="modal-actions">
+              <button type="button" id="modal-cancel" class="btn secondary-btn">キャンセル</button>
+              <button type="submit" id="modal-submit" class="btn primary-btn">保存する</button>
+            </div>
+            <div class="modal-actions-delete hidden" id="delete-action-group">
+              <button type="button" id="modal-delete" class="btn danger-btn">このピンを削除</button>
+            </div>
+          </form>
+        </div>
+      </div>
+
+      <!-- Settings / Data Management Modal -->
+      <div id="settings-modal-backdrop" class="modal-backdrop hidden">
+        <div class="modal-content glass-panel" style="max-height: 90vh; overflow-y: auto;">
+          <h3>データ管理・共有</h3>
+          <p style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.5rem;">
+            現在のマップ・ピンデータを書き出して共有したり、他の人が作成したデータを読み込みます。
+          </p>
+
+          <div class="form-group">
+            <button id="export-data-btn" class="btn primary-btn" style="width: 100%; justify-content: center; margin-bottom: 0.5rem; display: flex; align-items: center;">
+              <svg style="margin-right:8px;" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              現在のデータを書き出し (保存)
+            </button>
+            <p style="font-size: 0.75rem; color: var(--text-secondary); line-height: 1.3;">このファイルを誰かに送ることで、データを共有できます。</p>
+          </div>
+
+          <div class="form-group" style="padding-top: 1rem; border-top: 1px solid rgba(0,0,0,0.1);">
+            <label style="color: var(--danger-text); font-weight: bold;">
+              ファイルからデータを読み込み (復元)
+            </label>
+            <p style="font-size: 0.75rem; color: var(--text-secondary); margin-bottom: 0.5rem; line-height: 1.3;">
+              ⚠️ 注意: データを読み込むと、現在のあなたのデータはすべて消去・上書きされます。
+            </p>
+            <label for="import-data-upload" class="btn danger-btn" style="width: 100%; justify-content: center; cursor: pointer; display: flex; align-items: center;">
+              <svg style="margin-right:8px;" xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              データを読み込み上書きする
+              <input type="file" id="import-data-upload" accept=".json" hidden />
+            </label>
+          </div>
+
+          <div class="modal-actions" style="margin-top: 2rem;">
+            <button type="button" id="settings-cancel" class="btn secondary-btn" style="width: 100%;">閉じる</button>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>
