@@ -490,7 +490,18 @@ ui.importDataUpload.addEventListener('change', (e) => {
       if (importedData.settings) {
         if (importedData.settings.customSpecies) localStorage.setItem('tm_customSpecies', JSON.stringify(importedData.settings.customSpecies));
         if (importedData.settings.customGroups) localStorage.setItem('tm_customGroups', JSON.stringify(importedData.settings.customGroups));
-        if (importedData.settings.speciesColors) localStorage.setItem('tm_speciesColors', JSON.stringify(importedData.settings.speciesColors));
+        
+        if (importedData.settings.speciesColors) {
+          const colors = importedData.settings.speciesColors;
+          for (const key in colors) {
+            // HTMLエスケープブレイク（XSS）を防ぐため、HEXカラー形式以外の不正な文字列は除外する
+            if (!/^#[0-9a-fA-F]{3,6}$/.test(colors[key])) {
+              delete colors[key]; 
+            }
+          }
+          localStorage.setItem('tm_speciesColors', JSON.stringify(colors));
+        }
+
         if (importedData.settings.visibleGroups) localStorage.setItem('tm_visibleGroups', JSON.stringify(importedData.settings.visibleGroups));
       }
       
@@ -652,7 +663,10 @@ function handleMapClick(clientX, clientY) {
 }
 
 function getPinColor(species) {
-  return state.speciesColors[species] || '#8b5cf6'; // fallback
+  const color = state.speciesColors[species] || '#8b5cf6'; // fallback
+  // XSS対策: 安全なHEXカラーコード以外の不正文字列が混入している場合は無難な色にフォールバック
+  if (!/^#[0-9a-fA-F]{3,6}$/.test(color)) return '#8b5cf6';
+  return color;
 }
 
 function getPinSVG(color) {
