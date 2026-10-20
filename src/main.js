@@ -1,6 +1,6 @@
 // --- IndexedDB Wrapper ---
 const DB_NAME = 'TreeMapperDB';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 
 let db;
 function initDB() {
@@ -14,6 +14,10 @@ function initDB() {
       if (!db.objectStoreNames.contains('pins')) {
         const pinStore = db.createObjectStore('pins', { keyPath: 'id' });
         pinStore.createIndex('mapId', 'mapId', { unique: false });
+      }
+      if (!db.objectStoreNames.contains('areas')) {
+        const areaStore = db.createObjectStore('areas', { keyPath: 'id' });
+        areaStore.createIndex('mapId', 'mapId', { unique: false });
       }
       if (!db.objectStoreNames.contains('settings')) {
         db.createObjectStore('settings', { keyPath: 'key' });
@@ -61,6 +65,17 @@ function getPinsByMap(mapId) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('pins', 'readonly');
     const store = tx.objectStore('pins');
+    const index = store.index('mapId');
+    const request = index.getAll(mapId);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = (e) => reject(e);
+  });
+}
+
+function getAreasByMap(mapId) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('areas', 'readonly');
+    const store = tx.objectStore('areas');
     const index = store.index('mapId');
     const request = index.getAll(mapId);
     request.onsuccess = () => resolve(request.result);
@@ -131,12 +146,26 @@ const ui = {
   mapWrapper: document.getElementById('map-wrapper'),
   mapImage: document.getElementById('map-image'),
   pinsContainer: document.getElementById('pins-container'),
-  
+  areasSvg: document.getElementById('areas-svg'),
+  mapHint: document.getElementById('map-hint'),
+
   // Header / Map Selector
+  mainHeader: document.getElementById('main-header'),
   mapSelector: document.getElementById('map-selector'),
   filterBtn: document.getElementById('filter-btn'),
   filterPanel: document.getElementById('filter-panel'),
   filterList: document.getElementById('filter-list'),
+  hedgeBtn: document.getElementById('hedge-btn'),
+  drawingHint: document.getElementById('drawing-hint'),
+
+  // Hedge Submenu & Drawing Controls
+  hedgeSubmenu: document.getElementById('hedge-submenu'),
+  hedgeLineBtn: document.getElementById('hedge-line-btn'),
+  hedgePolygonBtn: document.getElementById('hedge-polygon-btn'),
+  hedgeSubmenuCancel: document.getElementById('hedge-submenu-cancel'),
+  drawingControls: document.getElementById('drawing-controls'),
+  drawingConfirmBtn: document.getElementById('drawing-confirm-btn'),
+  drawingCancelBtn: document.getElementById('drawing-cancel-btn'),
 
   // Settings / Data Management
   settingsBtn: document.getElementById('settings-btn'),
@@ -146,28 +175,37 @@ const ui = {
   exportDataBtn: document.getElementById('export-data-btn'),
   importDataUpload: document.getElementById('import-data-upload'),
 
-  // Modal
+  // Pin Modal
   modalBackdrop: document.getElementById('pin-modal-backdrop'),
   pinForm: document.getElementById('pin-form'),
   modalCancel: document.getElementById('modal-cancel'),
   modalTitle: document.getElementById('modal-title'),
   modalDelete: document.getElementById('modal-delete'),
   deleteActionGroup: document.getElementById('delete-action-group'),
-  
   pinGroupSelect: document.getElementById('pin-group'),
   newGroupWrapper: document.getElementById('new-group-wrapper'),
   newGroupInput: document.getElementById('new-group'),
-
   treeSpecies: document.getElementById('tree-species'),
   newSpeciesGroup: document.getElementById('new-species-group'),
   newSpeciesInput: document.getElementById('new-species'),
   treeLabel: document.getElementById('tree-label'),
-
-  // Photo Ext
   pinPhotoInput: document.getElementById('pin-photo'),
   pinPhotoPreview: document.getElementById('pin-photo-preview'),
   photoPlaceholder: document.getElementById('photo-placeholder'),
-  removePhotoBtn: document.getElementById('remove-photo-btn')
+  removePhotoBtn: document.getElementById('remove-photo-btn'),
+
+  // Area Modal
+  areaModalBackdrop: document.getElementById('area-modal-backdrop'),
+  areaForm: document.getElementById('area-form'),
+  areaModalTitle: document.getElementById('area-modal-title'),
+  areaLabel: document.getElementById('area-label'),
+  areaGroupSelect: document.getElementById('area-group'),
+  areaNewGroupWrapper: document.getElementById('area-new-group-wrapper'),
+  areaNewGroupInput: document.getElementById('area-new-group'),
+  areaColorPalette: document.getElementById('area-color-palette'),
+  areaModalCancel: document.getElementById('area-modal-cancel'),
+  areaDeleteGroup: document.getElementById('area-delete-group'),
+  areaModalDelete: document.getElementById('area-modal-delete')
 };
 
 // Application State
@@ -182,6 +220,7 @@ let state = {
   activeMapId: null,
   activeMapImage: null,
   pins: [],
+  areas: [],
   customSpecies: JSON.parse(localStorage.getItem('tm_customSpecies') || '[]'),
   speciesColors: Object.assign({
     'shirakashi': '#10b981',
@@ -193,7 +232,13 @@ let state = {
   activePinId: null,
   tempClickPos: null,
   currentPinPhoto: null,
-  selectedNewColor: null
+  selectedNewColor: null,
+
+  // Hedge mode state
+  hedgeMode: null, // null | 'line' | 'polygon'
+  currentPoints: [], // drawing in progress: [{x, y}]
+  activeAreaId: null, // editing/viewing area
+  selectedAreaColor: '#22c55e'
 };
 
 // --- Boot ---
@@ -261,6 +306,7 @@ async function loadMapData(mapId) {
   await saveDBItem('settings', { key: 'activeMapId', value: mapId });
 
   state.pins = await getPinsByMap(mapId);
+  state.areas = await getAreasByMap(mapId);
 
   ui.mapImage.src = state.activeMapImage;
   ui.uploadScreen.classList.add('hidden');
@@ -273,6 +319,7 @@ async function loadMapData(mapId) {
     updateTransform();
     renderFilterPanel();
     renderPins();
+    renderAreas();
     ui.loader.classList.add('hidden');
   };
 }
@@ -284,6 +331,7 @@ function showUploadScreen() {
   state.activeMapId = null;
   state.activeMapImage = null;
   state.pins = [];
+  state.areas = [];
   try{ ui.mapImage.src = ''; }catch(e){} 
 }
 
@@ -313,7 +361,6 @@ ui.mapSelector.addEventListener('change', async (e) => {
   }
 });
 
-
 function saveLocalSettings() {
   localStorage.setItem('tm_customSpecies', JSON.stringify(state.customSpecies));
   localStorage.setItem('tm_speciesColors', JSON.stringify(state.speciesColors));
@@ -336,12 +383,18 @@ function loadCustomOptions() {
       opt.value = grp; opt.textContent = grp;
       ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
     }
+    if (!ui.areaGroupSelect.querySelector(`option[value="${grp}"]`)) {
+      const opt = document.createElement('option');
+      opt.value = grp; opt.textContent = grp;
+      ui.areaGroupSelect.insertBefore(opt, ui.areaGroupSelect.lastElementChild);
+    }
   });
 }
 
 function getAllGroups() {
   const groups = new Set(['デフォルト', ...state.customGroups]);
   state.pins.forEach(p => groups.add(p.group));
+  state.areas.forEach(a => groups.add(a.group));
   return Array.from(groups);
 }
 
@@ -371,6 +424,7 @@ function renderFilterPanel() {
       }
       saveLocalSettings();
       renderPins();
+      renderAreas();
     });
 
     label.appendChild(checkbox);
@@ -387,10 +441,12 @@ ui.filterBtn.addEventListener('click', () => {
 // Map Delete
 ui.resetMapBtn.addEventListener('click', async () => {
   if (!state.activeMapId) return;
-  if (confirm('このマップ画像とすべてのピンを完全に削除しますか？\n（この操作は取り消せません）')) {
+  if (confirm('このマップ画像とすべてのピン・生垣エリアを完全に削除しますか？\n（この操作は取り消せません）')) {
     ui.loader.classList.remove('hidden');
     const pins = await getPinsByMap(state.activeMapId);
     for(const p of pins) { await deleteDBItem('pins', p.id); }
+    const areas = await getAreasByMap(state.activeMapId);
+    for(const a of areas) { await deleteDBItem('areas', a.id); }
     await deleteDBItem('maps', state.activeMapId);
     
     state.maps = await getAllDBItems('maps');
@@ -424,12 +480,14 @@ ui.exportDataBtn.addEventListener('click', async () => {
   try {
     const allMaps = await getAllDBItems('maps');
     const allPins = await getAllDBItems('pins');
+    const allAreas = await getAllDBItems('areas');
     
     const exportObj = {
-      version: '1.0.0',
+      version: '1.1.0',
       timestamp: Date.now(),
       maps: allMaps,
       pins: allPins,
+      areas: allAreas,
       settings: {
         customSpecies: state.customSpecies,
         customGroups: state.customGroups,
@@ -478,6 +536,7 @@ ui.importDataUpload.addEventListener('change', (e) => {
 
       await clearDBStore('maps');
       await clearDBStore('pins');
+      await clearDBStore('areas');
       await clearDBStore('settings');
 
       for (const map of importedData.maps) {
@@ -485,6 +544,11 @@ ui.importDataUpload.addEventListener('change', (e) => {
       }
       for (const pin of importedData.pins) {
         await saveDBItem('pins', pin);
+      }
+      if (importedData.areas) {
+        for (const area of importedData.areas) {
+          await saveDBItem('areas', area);
+        }
       }
 
       if (importedData.settings) {
@@ -494,7 +558,6 @@ ui.importDataUpload.addEventListener('change', (e) => {
         if (importedData.settings.speciesColors) {
           const colors = importedData.settings.speciesColors;
           for (const key in colors) {
-            // HTMLエスケープブレイク（XSS）を防ぐため、HEXカラー形式以外の不正な文字列は除外する
             if (!/^#[0-9a-fA-F]{3,6}$/.test(colors[key])) {
               delete colors[key]; 
             }
@@ -525,7 +588,6 @@ ui.importDataUpload.addEventListener('change', (e) => {
   };
   reader.readAsText(file);
 });
-
 
 // --- Map Upload ---
 ui.mapUploadBtn.addEventListener('change', async (e) => {
@@ -570,7 +632,7 @@ function getCenter(touches) {
 }
 
 ui.viewerContainer.addEventListener('touchstart', (e) => {
-  if (e.target.closest('.map-pin') || e.target.closest('.glass-header')) return;
+  if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.area-shape')) return;
   if (e.touches.length <= 2) e.preventDefault(); 
   isDragging = true; state.hasMoved = false;
   lastTouches = Array.from(e.touches);
@@ -619,7 +681,7 @@ ui.viewerContainer.addEventListener('touchend', (e) => {
 });
 
 ui.viewerContainer.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.filter-panel')) return;
+  if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.filter-panel') || e.target.closest('.area-shape')) return;
   isDragging = true; state.hasMoved = false; 
   startPos = { x: e.clientX, y: e.clientY };
   touchStartPos = { x: e.clientX, y: e.clientY };
@@ -656,15 +718,18 @@ ui.viewerContainer.addEventListener('wheel', (e) => {
 
 // --- Interactions ---
 function handleMapClick(clientX, clientY) {
-  const rect = ui.mapWrapper.getBoundingClientRect();
   const x = (clientX - state.transform.x) / state.transform.scale;
   const y = (clientY - state.transform.y) / state.transform.scale;
-  openModal(null, { x, y });
+
+  if (state.hedgeMode) {
+    handleHedgePointAdd(x, y);
+  } else {
+    openModal(null, { x, y });
+  }
 }
 
 function getPinColor(species) {
-  const color = state.speciesColors[species] || '#8b5cf6'; // fallback
-  // XSS対策: 安全なHEXカラーコード以外の不正文字列が混入している場合は無難な色にフォールバック
+  const color = state.speciesColors[species] || '#8b5cf6';
   if (!/^#[0-9a-fA-F]{3,6}$/.test(color)) return '#8b5cf6';
   return color;
 }
@@ -699,7 +764,321 @@ function renderPins() {
   });
 }
 
-// --- Modal & Color Palette ---
+// --- Hedge / Area Rendering & Drawing ---
+function renderAreas() {
+  ui.areasSvg.innerHTML = '';
+
+  state.areas.forEach(area => {
+    if (!state.visibleGroups.includes(area.group)) return;
+
+    const color = /^#[0-9a-fA-F]{3,6}$/.test(area.color) ? area.color : '#22c55e';
+    const pointsStr = area.points.map(p => `${p.x},${p.y}`).join(' ');
+
+    let shape;
+    if (area.type === 'line') {
+      shape = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      shape.setAttribute('points', pointsStr);
+      shape.setAttribute('stroke', color);
+      shape.setAttribute('stroke-width', '4');
+      shape.setAttribute('fill', 'none');
+      shape.setAttribute('stroke-linecap', 'round');
+      shape.setAttribute('stroke-linejoin', 'round');
+    } else {
+      shape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      shape.setAttribute('points', pointsStr);
+      shape.setAttribute('stroke', color);
+      shape.setAttribute('stroke-width', '2.5');
+      shape.setAttribute('fill', color);
+      shape.setAttribute('fill-opacity', '0.25');
+      shape.setAttribute('stroke-linejoin', 'round');
+    }
+
+    shape.setAttribute('class', 'area-shape');
+    
+    shape.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openAreaModal(area.id);
+    });
+    shape.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
+    shape.addEventListener('mousedown', (e) => e.stopPropagation());
+
+    ui.areasSvg.appendChild(shape);
+  });
+
+  // Render in-progress drawing preview
+  if (state.hedgeMode && state.currentPoints.length > 0) {
+    const previewPointsStr = state.currentPoints.map(p => `${p.x},${p.y}`).join(' ');
+    
+    let previewShape;
+    if (state.hedgeMode === 'line') {
+      previewShape = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      previewShape.setAttribute('points', previewPointsStr);
+      previewShape.setAttribute('stroke', '#22c55e');
+      previewShape.setAttribute('stroke-width', '3');
+      previewShape.setAttribute('fill', 'none');
+      previewShape.setAttribute('class', 'drawing-active-line');
+    } else {
+      previewShape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      previewShape.setAttribute('points', previewPointsStr);
+      previewShape.setAttribute('stroke', '#22c55e');
+      previewShape.setAttribute('stroke-width', '2');
+      previewShape.setAttribute('fill', '#22c55e');
+      previewShape.setAttribute('fill-opacity', '0.2');
+      previewShape.setAttribute('class', 'drawing-active-line');
+    }
+    ui.areasSvg.appendChild(previewShape);
+
+    // Render vertex circles
+    state.currentPoints.forEach((pt, idx) => {
+      const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+      circle.setAttribute('cx', pt.x);
+      circle.setAttribute('cy', pt.y);
+      circle.setAttribute('r', '5');
+      circle.setAttribute('fill', idx === 0 ? '#15803d' : '#22c55e');
+      circle.setAttribute('stroke', 'white');
+      circle.setAttribute('stroke-width', '1.5');
+      ui.areasSvg.appendChild(circle);
+    });
+  }
+}
+
+// Hedge Mode Controls
+ui.hedgeBtn.addEventListener('click', () => {
+  if (state.hedgeMode) {
+    exitHedgeMode();
+  } else {
+    ui.hedgeSubmenu.classList.toggle('hidden');
+    ui.hedgeBtn.classList.toggle('active');
+  }
+});
+
+ui.hedgeSubmenuCancel.addEventListener('click', () => {
+  ui.hedgeSubmenu.classList.add('hidden');
+  ui.hedgeBtn.classList.remove('active');
+});
+
+ui.hedgeLineBtn.addEventListener('click', () => {
+  startHedgeMode('line');
+});
+
+ui.hedgePolygonBtn.addEventListener('click', () => {
+  startHedgeMode('polygon');
+});
+
+function startHedgeMode(type) {
+  state.hedgeMode = type;
+  state.currentPoints = [];
+  ui.hedgeSubmenu.classList.add('hidden');
+  ui.mainHeader.classList.add('hedge-mode');
+  ui.hedgeBtn.classList.add('active');
+  ui.mapHint.classList.add('hidden');
+  ui.drawingHint.classList.remove('hidden');
+  ui.drawingControls.classList.remove('hidden');
+
+  if (type === 'line') {
+    ui.drawingHint.textContent = '📏 直線モード: 始点をタップしてください';
+    ui.drawingConfirmBtn.style.display = 'none';
+  } else {
+    ui.drawingHint.textContent = '⬡ 面モード: 頂点を順番にタップしてください (3点以上で確定可能)';
+    ui.drawingConfirmBtn.style.display = 'inline-flex';
+    ui.drawingConfirmBtn.disabled = true;
+    ui.drawingConfirmBtn.style.opacity = '0.5';
+  }
+  renderAreas();
+}
+
+function exitHedgeMode() {
+  state.hedgeMode = null;
+  state.currentPoints = [];
+  ui.mainHeader.classList.remove('hedge-mode');
+  ui.hedgeBtn.classList.remove('active');
+  ui.drawingHint.classList.add('hidden');
+  ui.drawingControls.classList.add('hidden');
+  ui.mapHint.classList.remove('hidden');
+  renderAreas();
+}
+
+function handleHedgePointAdd(x, y) {
+  state.currentPoints.push({ x, y });
+
+  if (state.hedgeMode === 'line') {
+    if (state.currentPoints.length === 1) {
+      ui.drawingHint.textContent = '📏 終点をタップしてください';
+      renderAreas();
+    } else if (state.currentPoints.length === 2) {
+      renderAreas();
+      setTimeout(() => openAreaModal(null), 100);
+    }
+  } else if (state.hedgeMode === 'polygon') {
+    const count = state.currentPoints.length;
+    if (count < 3) {
+      ui.drawingHint.textContent = `⬡ ${count}点指定中... (あと${3 - count}点以上必要)`;
+      ui.drawingConfirmBtn.disabled = true;
+      ui.drawingConfirmBtn.style.opacity = '0.5';
+    } else {
+      ui.drawingHint.textContent = `⬡ ${count}点指定中: 続けるか[✓ 確定]を押してください`;
+      ui.drawingConfirmBtn.disabled = false;
+      ui.drawingConfirmBtn.style.opacity = '1';
+    }
+    renderAreas();
+  }
+}
+
+ui.drawingCancelBtn.addEventListener('click', exitHedgeMode);
+
+ui.drawingConfirmBtn.addEventListener('click', () => {
+  if (state.hedgeMode === 'polygon' && state.currentPoints.length >= 3) {
+    openAreaModal(null);
+  }
+});
+
+// Area Modal & Palette
+function renderAreaColorPalette() {
+  ui.areaColorPalette.innerHTML = '';
+  PALETTE_COLORS.forEach(color => {
+    const swatch = document.createElement('div');
+    swatch.className = 'color-swatch';
+    swatch.style.backgroundColor = color;
+    if (color === state.selectedAreaColor) swatch.classList.add('selected');
+
+    swatch.addEventListener('click', () => {
+      state.selectedAreaColor = color;
+      renderAreaColorPalette();
+    });
+
+    ui.areaColorPalette.appendChild(swatch);
+  });
+}
+
+function openAreaModal(areaId = null) {
+  state.activeAreaId = areaId;
+  ui.areaModalBackdrop.classList.remove('hidden');
+  ui.areaNewGroupWrapper.style.display = 'none';
+
+  if (areaId) {
+    const area = state.areas.find(a => a.id === areaId);
+    ui.areaModalTitle.textContent = 'エリアの確認・編集';
+    ui.areaLabel.value = area.label || '';
+    ui.areaGroupSelect.value = area.group;
+    state.selectedAreaColor = area.color || '#22c55e';
+    ui.areaDeleteGroup.classList.remove('hidden');
+  } else {
+    ui.areaModalTitle.textContent = state.hedgeMode === 'line' ? '生垣 (直線) を保存' : '生垣 (面) を保存';
+    ui.areaForm.reset();
+    if (state.customGroups.length > 0) {
+      ui.areaGroupSelect.value = state.customGroups[state.customGroups.length - 1];
+    } else {
+      ui.areaGroupSelect.value = 'デフォルト';
+    }
+    state.selectedAreaColor = '#22c55e';
+    ui.areaDeleteGroup.classList.add('hidden');
+  }
+
+  renderAreaColorPalette();
+}
+
+function closeAreaModal() {
+  ui.areaModalBackdrop.classList.add('hidden');
+  state.activeAreaId = null;
+}
+
+ui.areaModalCancel.addEventListener('click', () => {
+  closeAreaModal();
+  if (state.hedgeMode) exitHedgeMode();
+});
+
+ui.areaModalBackdrop.addEventListener('click', (e) => {
+  if (e.target === ui.areaModalBackdrop) {
+    closeAreaModal();
+    if (state.hedgeMode) exitHedgeMode();
+  }
+});
+
+ui.areaGroupSelect.addEventListener('change', (e) => {
+  ui.areaNewGroupWrapper.style.display = e.target.value === '__add_new__' ? 'block' : 'none';
+  if (e.target.value === '__add_new__') ui.areaNewGroupInput.focus();
+});
+
+ui.areaForm.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  let group = ui.areaGroupSelect.value;
+  if (group === '__add_new__') {
+    group = ui.areaNewGroupInput.value.trim();
+    if (!group) return alert('グループ名を入力してください。');
+    if (!state.customGroups.includes(group)) {
+      state.customGroups.push(group);
+      const opt = document.createElement('option');
+      opt.value = group; opt.textContent = group;
+      ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
+      const opt2 = document.createElement('option');
+      opt2.value = group; opt2.textContent = group;
+      ui.areaGroupSelect.insertBefore(opt2, ui.areaGroupSelect.lastElementChild);
+    }
+  }
+
+  if (!state.visibleGroups.includes(group)) {
+    state.visibleGroups.push(group);
+  }
+  saveLocalSettings();
+
+  const label = ui.areaLabel.value.trim();
+  let areaData;
+
+  if (state.activeAreaId) {
+    const index = state.areas.findIndex(a => a.id === state.activeAreaId);
+    if (index !== -1) {
+      areaData = state.areas[index];
+      areaData.group = group;
+      areaData.label = label;
+      areaData.color = state.selectedAreaColor;
+    }
+  } else {
+    areaData = {
+      id: 'area_' + Date.now().toString(),
+      mapId: state.activeMapId,
+      type: state.hedgeMode,
+      points: [...state.currentPoints],
+      group,
+      label,
+      color: state.selectedAreaColor,
+      createdAt: Date.now()
+    };
+  }
+
+  if (areaData) {
+    try {
+      ui.loader.classList.remove('hidden');
+      await saveDBItem('areas', areaData);
+      if (!state.activeAreaId) {
+        state.areas.push(areaData);
+      }
+    } catch(err) {
+      console.error(err);
+      alert('【保存エラー】エリアの保存に失敗しました。');
+    } finally {
+      ui.loader.classList.add('hidden');
+    }
+  }
+
+  renderFilterPanel();
+  closeAreaModal();
+  exitHedgeMode();
+});
+
+ui.areaModalDelete.addEventListener('click', async () => {
+  if (confirm('このエリアを削除しますか？')) {
+    ui.loader.classList.remove('hidden');
+    await deleteDBItem('areas', state.activeAreaId);
+    state.areas = state.areas.filter(a => a.id !== state.activeAreaId);
+    renderAreas();
+    renderFilterPanel();
+    ui.loader.classList.add('hidden');
+    closeAreaModal();
+  }
+});
+
+// --- Pin Modal & Color Palette ---
 function renderColorPalette() {
   const container = document.getElementById('species-color-palette');
   if(!container) return;
@@ -725,14 +1104,13 @@ function renderColorPalette() {
       
       swatch.addEventListener('click', () => {
         state.selectedNewColor = color;
-        renderColorPalette(); // re-render to update outline
+        renderColorPalette();
       });
     }
     
     container.appendChild(swatch);
   });
 }
-
 
 ui.pinPhotoInput.addEventListener('change', async (e) => {
   const file = e.target.files[0];
@@ -813,7 +1191,7 @@ ui.treeSpecies.addEventListener('change', (e) => {
   ui.newSpeciesGroup.style.display = e.target.value === '__add_new__' ? 'block' : 'none';
   if (e.target.value === '__add_new__') {
     ui.newSpeciesInput.focus();
-    renderColorPalette(); // Generate palette logic
+    renderColorPalette();
   }
 });
 
@@ -829,6 +1207,9 @@ ui.pinForm.addEventListener('submit', async (e) => {
       const opt = document.createElement('option');
       opt.value = group; opt.textContent = group;
       ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
+      const opt2 = document.createElement('option');
+      opt2.value = group; opt2.textContent = group;
+      ui.areaGroupSelect.insertBefore(opt2, ui.areaGroupSelect.lastElementChild);
     }
   }
 
@@ -837,7 +1218,6 @@ ui.pinForm.addEventListener('submit', async (e) => {
     species = ui.newSpeciesInput.value.trim();
     if (!species) return alert('種類名を入力してください。');
     
-    // Save chosen color to global lookup
     state.speciesColors[species] = state.selectedNewColor;
     if (!state.customSpecies.includes(species)) {
       state.customSpecies.push(species);
@@ -847,11 +1227,9 @@ ui.pinForm.addEventListener('submit', async (e) => {
     }
   }
   
-  // 新しくピンを置いた時は、そのグループを必ず「表示ON(フィルター通過)」の状態にする
   if (!state.visibleGroups.includes(group)) {
     state.visibleGroups.push(group);
   }
-  // 全ての設定変更をまとめてセーブ
   saveLocalSettings();
   
   const label = ui.treeLabel.value.trim();
@@ -883,7 +1261,6 @@ ui.pinForm.addEventListener('submit', async (e) => {
       ui.loader.classList.remove('hidden');
       await saveDBItem('pins', pinData);
       
-      // DBに無事保存できた場合のみ、画面描画用の配列に追加
       if (!state.activePinId && state.tempClickPos) {
         state.pins.push(pinData);
       }
