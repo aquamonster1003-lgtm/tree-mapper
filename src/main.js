@@ -632,7 +632,7 @@ function getCenter(touches) {
 }
 
 ui.viewerContainer.addEventListener('touchstart', (e) => {
-  if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.area-shape')) return;
+  if (e.target.closest('.glass-header') || e.target.closest('.hedge-submenu') || e.target.closest('.filter-panel') || e.target.closest('.drawing-controls')) return;
   if (e.touches.length <= 2) e.preventDefault(); 
   isDragging = true; state.hasMoved = false;
   lastTouches = Array.from(e.touches);
@@ -675,13 +675,48 @@ ui.viewerContainer.addEventListener('touchmove', (e) => {
 ui.viewerContainer.addEventListener('touchend', (e) => {
   lastTouches = Array.from(e.touches);
   if (e.touches.length === 0) {
+    const wasDragging = isDragging;
     isDragging = false;
-    if (!state.hasMoved && e.changedTouches.length === 1) handleMapClick(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+    if (wasDragging && !state.hasMoved && e.changedTouches.length === 1) {
+      const touch = e.changedTouches[0];
+
+      // 生垣モード中は頂点追加を最優先
+      if (state.hedgeMode) {
+        const x = (touch.clientX - state.transform.x) / state.transform.scale;
+        const y = (touch.clientY - state.transform.y) / state.transform.scale;
+        handleHedgePointAdd(x, y);
+        return;
+      }
+
+      // タップされた要素から直接判定 (SVG要素の closest が最も確実)
+      const target = document.elementFromPoint(touch.clientX, touch.clientY);
+      if (target) {
+        // ピンのタップチェック
+        const pinEl = target.closest('.map-pin');
+        if (pinEl && pinEl.dataset.pinId) {
+          openModal(pinEl.dataset.pinId);
+          return;
+        }
+
+        // エリアのタップチェック (polyline/polygon → 親の g[data-area-id])
+        const areaEl = target.closest('[data-area-id]');
+        if (areaEl) {
+          const areaId = areaEl.getAttribute('data-area-id');
+          if (areaId) {
+            openAreaModal(areaId);
+            return;
+          }
+        }
+      }
+
+      // 何もヒットしなかった場合は新規ピン追加
+      handleMapTap(touch.clientX, touch.clientY);
+    }
   }
 });
 
 ui.viewerContainer.addEventListener('mousedown', (e) => {
-  if (e.target.closest('.map-pin') || e.target.closest('.glass-header') || e.target.closest('.filter-panel') || e.target.closest('.area-shape')) return;
+  if (e.target.closest('.glass-header') || e.target.closest('.filter-panel') || e.target.closest('.hedge-submenu') || e.target.closest('.drawing-controls')) return;
   isDragging = true; state.hasMoved = false; 
   startPos = { x: e.clientX, y: e.clientY };
   touchStartPos = { x: e.clientX, y: e.clientY };
@@ -702,7 +737,37 @@ window.addEventListener('mousemove', (e) => {
 window.addEventListener('mouseup', (e) => {
   if (!isDragging) return;
   isDragging = false;
-  if (!state.hasMoved) handleMapClick(e.clientX, e.clientY);
+  if (!state.hasMoved) {
+    // 生垣モード中は頂点追加を最優先
+    if (state.hedgeMode) {
+      const x = (e.clientX - state.transform.x) / state.transform.scale;
+      const y = (e.clientY - state.transform.y) / state.transform.scale;
+      handleHedgePointAdd(x, y);
+      return;
+    }
+
+    // ピンのタップチェック
+    const pinEl = e.target.closest('.map-pin');
+    if (pinEl && pinEl.dataset.pinId) {
+      openModal(pinEl.dataset.pinId);
+      return;
+    }
+
+    // エリアのタップチェック
+    const areaEl = e.target.closest('[data-area-id]');
+    if (areaEl) {
+      const areaId = areaEl.getAttribute('data-area-id');
+      if (areaId) {
+        openAreaModal(areaId);
+        return;
+      }
+    }
+
+    // 空白クリック → 新規ピン追加
+    const x = (e.clientX - state.transform.x) / state.transform.scale;
+    const y = (e.clientY - state.transform.y) / state.transform.scale;
+    openModal(null, { x, y });
+  }
 });
 
 ui.viewerContainer.addEventListener('wheel', (e) => {
@@ -717,15 +782,11 @@ ui.viewerContainer.addEventListener('wheel', (e) => {
 }, { passive: false });
 
 // --- Interactions ---
-function handleMapClick(clientX, clientY) {
+function handleMapTap(clientX, clientY) {
+  // 空白タップ: 新規ピン追加
   const x = (clientX - state.transform.x) / state.transform.scale;
   const y = (clientY - state.transform.y) / state.transform.scale;
-
-  if (state.hedgeMode) {
-    handleHedgePointAdd(x, y);
-  } else {
-    openModal(null, { x, y });
-  }
+  openModal(null, { x, y });
 }
 
 function getPinColor(species) {
@@ -748,6 +809,7 @@ function renderPins() {
 
     const el = document.createElement('div');
     el.className = 'map-pin';
+    el.dataset.pinId = pin.id;
     el.style.left = `${pin.x}px`;
     el.style.top = `${pin.y}px`;
     el.title = `${pin.group} - ${pin.species}`;
@@ -755,10 +817,6 @@ function renderPins() {
     let photoBadge = pin.photo ? `<div style="position:absolute; top:-4px; right:-4px; width:10px; height:10px; background:#ef4444; border-radius:50%; border:2px solid white;"></div>` : '';
     
     el.innerHTML = getPinSVG(getPinColor(pin.species)) + photoBadge;
-    
-    el.addEventListener('click', (e) => { e.stopPropagation(); openModal(pin.id); });
-    el.addEventListener('touchstart', (e) => e.stopPropagation(), {passive: true});
-    el.addEventListener('mousedown', (e) => e.stopPropagation());
 
     ui.pinsContainer.appendChild(el);
   });
@@ -774,35 +832,64 @@ function renderAreas() {
     const color = /^#[0-9a-fA-F]{3,6}$/.test(area.color) ? area.color : '#22c55e';
     const pointsStr = area.points.map(p => `${p.x},${p.y}`).join(' ');
 
-    let shape;
+    const group = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    group.setAttribute('class', 'area-shape');
+    group.setAttribute('data-area-id', area.id);
+
     if (area.type === 'line') {
-      shape = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      shape.setAttribute('points', pointsStr);
-      shape.setAttribute('stroke', color);
-      shape.setAttribute('stroke-width', '4');
-      shape.setAttribute('fill', 'none');
-      shape.setAttribute('stroke-linecap', 'round');
-      shape.setAttribute('stroke-linejoin', 'round');
+      // タップ判定を広げるための透明な太い線 (幅 36px)
+      const hitLine = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      hitLine.setAttribute('points', pointsStr);
+      hitLine.setAttribute('stroke', 'transparent');
+      hitLine.setAttribute('stroke-width', '36');
+      hitLine.setAttribute('fill', 'none');
+      hitLine.setAttribute('stroke-linecap', 'round');
+      hitLine.setAttribute('stroke-linejoin', 'round');
+      hitLine.setAttribute('class', 'area-hit-line');
+      group.appendChild(hitLine);
+
+      // 画面に表示する線 (幅 4px)
+      const visibleLine = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      visibleLine.setAttribute('points', pointsStr);
+      visibleLine.setAttribute('stroke', color);
+      visibleLine.setAttribute('stroke-width', '4');
+      visibleLine.setAttribute('fill', 'none');
+      visibleLine.setAttribute('stroke-linecap', 'round');
+      visibleLine.setAttribute('stroke-linejoin', 'round');
+      visibleLine.setAttribute('class', 'area-visible-shape');
+      group.appendChild(visibleLine);
     } else {
-      shape = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-      shape.setAttribute('points', pointsStr);
-      shape.setAttribute('stroke', color);
-      shape.setAttribute('stroke-width', '2.5');
-      shape.setAttribute('fill', color);
-      shape.setAttribute('fill-opacity', '0.25');
-      shape.setAttribute('stroke-linejoin', 'round');
+      // 面 (polygon)
+      const poly = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+      poly.setAttribute('points', pointsStr);
+      poly.setAttribute('stroke', color);
+      poly.setAttribute('stroke-width', '2.5');
+      poly.setAttribute('fill', color);
+      poly.setAttribute('fill-opacity', '0.25');
+      poly.setAttribute('stroke-linejoin', 'round');
+      poly.setAttribute('class', 'area-polygon area-visible-shape');
+      group.appendChild(poly);
     }
 
-    shape.setAttribute('class', 'area-shape');
-    
-    shape.addEventListener('click', (e) => {
-      e.stopPropagation();
-      openAreaModal(area.id);
-    });
-    shape.addEventListener('touchstart', (e) => e.stopPropagation(), { passive: true });
-    shape.addEventListener('mousedown', (e) => e.stopPropagation());
+    // ラベル表示（名前がある場合）
+    if (area.label) {
+      const firstPt = area.points[0];
+      const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+      text.setAttribute('x', firstPt.x);
+      text.setAttribute('y', firstPt.y - 8);
+      text.setAttribute('fill', color);
+      text.setAttribute('font-size', '12');
+      text.setAttribute('font-weight', 'bold');
+      text.setAttribute('paint-order', 'stroke');
+      text.setAttribute('stroke', '#ffffff');
+      text.setAttribute('stroke-width', '3');
+      text.setAttribute('stroke-linejoin', 'round');
+      text.setAttribute('style', 'pointer-events: none; user-select: none;');
+      text.textContent = area.label;
+      group.appendChild(text);
+    }
 
-    ui.areasSvg.appendChild(shape);
+    ui.areasSvg.appendChild(group);
   });
 
   // Render in-progress drawing preview
@@ -957,6 +1044,7 @@ function openAreaModal(areaId = null) {
 
   if (areaId) {
     const area = state.areas.find(a => a.id === areaId);
+    if (!area) return;
     ui.areaModalTitle.textContent = 'エリアの確認・編集';
     ui.areaLabel.value = area.label || '';
     ui.areaGroupSelect.value = area.group;
@@ -1062,6 +1150,7 @@ ui.areaForm.addEventListener('submit', async (e) => {
   }
 
   renderFilterPanel();
+  renderAreas();
   closeAreaModal();
   exitHedgeMode();
 });

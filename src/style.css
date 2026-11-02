@@ -555,17 +555,28 @@ h1.title { font-size: 2rem; margin-bottom: 0.5rem; font-weight: 700; color: #158
 .area-shape {
   pointer-events: auto;
   cursor: pointer;
-  transition: opacity 0.2s, stroke-width 0.2s;
+  transition: opacity 0.2s;
 }
 
-.area-shape:hover {
+.area-shape:hover .area-visible-shape {
   opacity: 0.85;
-  stroke-width: 4px;
+  filter: brightness(1.1);
+}
+
+.area-hit-line {
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.area-polygon {
+  pointer-events: all;
+  cursor: pointer;
 }
 
 .drawing-active-line {
   stroke-dasharray: 6 4;
   animation: dash 1s linear infinite;
+  pointer-events: none;
 }
 
 @keyframes dash {
