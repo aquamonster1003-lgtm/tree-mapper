@@ -1,107 +1,11 @@
-// --- IndexedDB Wrapper ---
-const DB_NAME = 'TreeMapperDB';
-const DB_VERSION = 2;
-
-let db;
-function initDB() {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains('maps')) {
-        db.createObjectStore('maps', { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains('pins')) {
-        const pinStore = db.createObjectStore('pins', { keyPath: 'id' });
-        pinStore.createIndex('mapId', 'mapId', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('areas')) {
-        const areaStore = db.createObjectStore('areas', { keyPath: 'id' });
-        areaStore.createIndex('mapId', 'mapId', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings', { keyPath: 'key' });
-      }
-    };
-    request.onsuccess = (event) => {
-      db = event.target.result;
-      resolve();
-    };
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function saveDBItem(storeName, item) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    const request = store.put(item);
-    request.onsuccess = () => resolve();
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function getDBItem(storeName, key) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const request = store.get(key);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function getAllDBItems(storeName) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function getPinsByMap(mapId) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('pins', 'readonly');
-    const store = tx.objectStore('pins');
-    const index = store.index('mapId');
-    const request = index.getAll(mapId);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function getAreasByMap(mapId) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('areas', 'readonly');
-    const store = tx.objectStore('areas');
-    const index = store.index('mapId');
-    const request = index.getAll(mapId);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function deleteDBItem(storeName, key) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    const request = store.delete(key);
-    request.onsuccess = () => resolve();
-    request.onerror = (e) => reject(e);
-  });
-}
-
-function clearDBStore(storeName) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    const request = store.clear();
-    request.onsuccess = () => resolve();
-    request.onerror = (e) => reject(e);
-  });
-}
+import {
+  initRepository, newId,
+  listMaps, getMap, saveMap, deleteMap,
+  listPins, savePin, deletePin,
+  listAreas, saveArea, deleteArea,
+  listAllGroups, getSetting, setSetting, removeSetting,
+  exportAll, replaceAll
+} from './repository.js';
 
 // --- Image Compression ---
 function compressImage(file, maxSize = 800, quality = 0.7) {
@@ -227,7 +131,9 @@ let state = {
     'keyaki': '#f59e0b'
   }, JSON.parse(localStorage.getItem('tm_speciesColors') || '{}')),
   customGroups: JSON.parse(localStorage.getItem('tm_customGroups') || '[]'),
-  visibleGroups: JSON.parse(localStorage.getItem('tm_visibleGroups') || '["デフォルト"]'),
+  // 表示するグループではなく「隠すグループ」を保存する。
+  // こうすると、他の人が新しく作ったグループは既定で表示される。
+  hiddenGroups: JSON.parse(localStorage.getItem('tm_hiddenGroups') || '[]'),
   transform: { x: 0, y: 0, scale: 1 },
   activePinId: null,
   tempClickPos: null,
@@ -245,8 +151,9 @@ let state = {
 async function init() {
   ui.loader.classList.remove('hidden');
   try {
-    await initDB();
+    await initRepository();
     await checkMigration();
+    await migrateVisibleToHiddenGroups();
     await loadInitialData();
   } catch (err) {
     console.error('DB Initialization failed', err);
@@ -261,27 +168,42 @@ async function checkMigration() {
 
   const oldMapSrc = localStorage.getItem('tm_mapSrc');
   if (oldMapSrc) {
-    const mapId = 'map_' + Date.now();
-    const newMap = { id: mapId, name: '最初のマップ', image: oldMapSrc, createdAt: Date.now() };
-    await saveDBItem('maps', newMap);
+    const mapId = newId('map');
+    const newMap = { id: mapId, name: '最初のマップ', image: oldMapSrc };
+    await saveMap(newMap);
 
     const oldPins = JSON.parse(localStorage.getItem('tm_pins') || '[]');
     for (const pin of oldPins) {
       if (!pin.group) pin.group = 'デフォルト';
       pin.mapId = mapId;
-      await saveDBItem('pins', pin);
+      await savePin(pin);
     }
-    await saveDBItem('settings', { key: 'activeMapId', value: mapId });
+    await setSetting('activeMapId', mapId);
   }
   localStorage.setItem('tm_migrated', 'true');
 }
 
-async function loadInitialData() {
-  loadCustomOptions();
+// 旧: 表示するグループ (tm_visibleGroups) → 新: 隠すグループ (tm_hiddenGroups)
+// 旧版は「保存済みの表示グループに無いもの = 非表示」だったので、その状態をそのまま引き継ぐ
+async function migrateVisibleToHiddenGroups() {
+  if (localStorage.getItem('tm_hiddenGroups') !== null) return;
 
-  state.maps = await getAllDBItems('maps');
-  let activeMapSetting = await getDBItem('settings', 'activeMapId');
-  let targetMapId = activeMapSetting ? activeMapSetting.value : null;
+  const legacy = localStorage.getItem('tm_visibleGroups');
+  let hidden = [];
+  if (legacy !== null) {
+    const visible = JSON.parse(legacy);
+    const known = new Set(['デフォルト', ...state.customGroups, ...(await listAllGroups())]);
+    hidden = Array.from(known).filter(g => !visible.includes(g));
+  }
+  state.hiddenGroups = hidden;
+  localStorage.setItem('tm_hiddenGroups', JSON.stringify(hidden));
+}
+
+async function loadInitialData() {
+  renderSelectOptions();
+
+  state.maps = await listMaps();
+  let targetMapId = (await getSetting('activeMapId')) || null;
 
   if (state.maps.length === 0) {
     showUploadScreen();
@@ -295,18 +217,19 @@ async function loadInitialData() {
 
 async function loadMapData(mapId) {
   ui.loader.classList.remove('hidden');
-  const mapData = await getDBItem('maps', mapId);
+  const mapData = await getMap(mapId);
   if (!mapData) {
     ui.loader.classList.add('hidden');
-    return showUploadScreen(); 
+    return showUploadScreen();
   }
 
   state.activeMapId = mapId;
   state.activeMapImage = mapData.image;
-  await saveDBItem('settings', { key: 'activeMapId', value: mapId });
+  await setSetting('activeMapId', mapId);
 
-  state.pins = await getPinsByMap(mapId);
-  state.areas = await getAreasByMap(mapId);
+  state.pins = await listPins(mapId);
+  state.areas = await listAreas(mapId);
+  renderSelectOptions();
 
   ui.mapImage.src = state.activeMapImage;
   ui.uploadScreen.classList.add('hidden');
@@ -365,37 +288,73 @@ function saveLocalSettings() {
   localStorage.setItem('tm_customSpecies', JSON.stringify(state.customSpecies));
   localStorage.setItem('tm_speciesColors', JSON.stringify(state.speciesColors));
   localStorage.setItem('tm_customGroups', JSON.stringify(state.customGroups));
-  localStorage.setItem('tm_visibleGroups', JSON.stringify(state.visibleGroups));
+  localStorage.setItem('tm_hiddenGroups', JSON.stringify(state.hiddenGroups));
 }
 
-function loadCustomOptions() {
-  state.customSpecies.forEach(sp => {
-    if (!ui.treeSpecies.querySelector(`option[value="${sp}"]`)) {
-      const opt = document.createElement('option');
-      opt.value = sp; opt.textContent = sp;
-      ui.treeSpecies.insertBefore(opt, ui.treeSpecies.lastElementChild);
-    }
-  });
+// 組み込みの樹種 (value は保存済みデータとの互換のため変更しない)
+const BUILTIN_SPECIES = [
+  { value: 'shirakashi', label: 'シラカシ' },
+  { value: 'keyaki', label: 'ケヤキ' }
+];
 
-  state.customGroups.forEach(grp => {
-    if (!ui.pinGroupSelect.querySelector(`option[value="${grp}"]`)) {
-      const opt = document.createElement('option');
-      opt.value = grp; opt.textContent = grp;
-      ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
-    }
-    if (!ui.areaGroupSelect.querySelector(`option[value="${grp}"]`)) {
-      const opt = document.createElement('option');
-      opt.value = grp; opt.textContent = grp;
-      ui.areaGroupSelect.insertBefore(opt, ui.areaGroupSelect.lastElementChild);
-    }
+// 樹種・グループのプルダウンを、現在の状態から丸ごと作り直す。
+// 選択肢が増える経路 (新規追加 / マップ切替 / インポート / 将来の他ユーザーの追加) は
+// すべてこの関数を呼ぶだけでよい。作り直しても現在の選択は保つ。
+function renderSelectOptions() {
+  const species = [
+    ...BUILTIN_SPECIES,
+    ...state.customSpecies.map(sp => ({ value: sp, label: sp })),
+    ...state.pins.map(p => ({ value: p.species, label: p.species }))
+  ];
+  fillSelect(ui.treeSpecies, species, '+ 新しい種類を追加...');
+
+  const groups = getAllGroups().map(g => ({
+    value: g,
+    label: g === 'デフォルト' ? 'デフォルト (未分類)' : g
+  }));
+  fillSelect(ui.pinGroupSelect, groups, '+ 新しいグループを作成...');
+  fillSelect(ui.areaGroupSelect, groups, '+ 新しいグループを作成...');
+}
+
+function fillSelect(select, options, addNewLabel) {
+  const current = select.value;
+  const seen = new Set();
+  select.innerHTML = '';
+  options.forEach(({ value, label }) => {
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    select.appendChild(opt);
   });
+  const addOpt = document.createElement('option');
+  addOpt.value = '__add_new__';
+  addOpt.textContent = addNewLabel;
+  select.appendChild(addOpt);
+
+  if (current && seen.has(current)) select.value = current;
+}
+
+function collectGroups(customGroups, pins, areas) {
+  const groups = new Set(['デフォルト', ...customGroups]);
+  pins.forEach(p => groups.add(p.group));
+  areas.forEach(a => groups.add(a.group));
+  groups.delete(undefined);
+  groups.delete('');
+  return Array.from(groups);
 }
 
 function getAllGroups() {
-  const groups = new Set(['デフォルト', ...state.customGroups]);
-  state.pins.forEach(p => groups.add(p.group));
-  state.areas.forEach(a => groups.add(a.group));
-  return Array.from(groups);
+  return collectGroups(state.customGroups, state.pins, state.areas);
+}
+
+function isGroupVisible(group) {
+  return !state.hiddenGroups.includes(group);
+}
+
+function showGroup(group) {
+  state.hiddenGroups = state.hiddenGroups.filter(g => g !== group);
 }
 
 function renderFilterPanel() {
@@ -408,19 +367,13 @@ function renderFilterPanel() {
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.value = grp;
-    
-    if (state.visibleGroups.includes(grp)) {
-      checkbox.checked = true;
-    } else if (!localStorage.getItem('tm_visibleGroups')) {
-      checkbox.checked = true;
-      state.visibleGroups.push(grp);
-    }
+    checkbox.checked = isGroupVisible(grp);
 
     checkbox.addEventListener('change', (e) => {
       if (e.target.checked) {
-        if (!state.visibleGroups.includes(grp)) state.visibleGroups.push(grp);
-      } else {
-        state.visibleGroups = state.visibleGroups.filter(g => g !== grp);
+        showGroup(grp);
+      } else if (!state.hiddenGroups.includes(grp)) {
+        state.hiddenGroups.push(grp);
       }
       saveLocalSettings();
       renderPins();
@@ -443,17 +396,13 @@ ui.resetMapBtn.addEventListener('click', async () => {
   if (!state.activeMapId) return;
   if (confirm('このマップ画像とすべてのピン・生垣エリアを完全に削除しますか？\n（この操作は取り消せません）')) {
     ui.loader.classList.remove('hidden');
-    const pins = await getPinsByMap(state.activeMapId);
-    for(const p of pins) { await deleteDBItem('pins', p.id); }
-    const areas = await getAreasByMap(state.activeMapId);
-    for(const a of areas) { await deleteDBItem('areas', a.id); }
-    await deleteDBItem('maps', state.activeMapId);
-    
-    state.maps = await getAllDBItems('maps');
+    await deleteMap(state.activeMapId);
+
+    state.maps = await listMaps();
     if (state.maps.length > 0) {
       await loadMapData(state.maps[0].id);
     } else {
-      await deleteDBItem('settings', 'activeMapId');
+      await removeSetting('activeMapId');
       showUploadScreen();
     }
     ui.loader.classList.add('hidden');
@@ -478,21 +427,19 @@ ui.settingsModal.addEventListener('click', (e) => {
 ui.exportDataBtn.addEventListener('click', async () => {
   ui.loader.classList.remove('hidden');
   try {
-    const allMaps = await getAllDBItems('maps');
-    const allPins = await getAllDBItems('pins');
-    const allAreas = await getAllDBItems('areas');
-    
+    const { maps, pins, areas } = await exportAll();
+
     const exportObj = {
-      version: '1.1.0',
+      version: '1.2.0',
       timestamp: Date.now(),
-      maps: allMaps,
-      pins: allPins,
-      areas: allAreas,
+      maps,
+      pins,
+      areas,
       settings: {
         customSpecies: state.customSpecies,
         customGroups: state.customGroups,
         speciesColors: state.speciesColors,
-        visibleGroups: state.visibleGroups
+        hiddenGroups: state.hiddenGroups
       }
     };
     
@@ -534,22 +481,11 @@ ui.importDataUpload.addEventListener('change', (e) => {
         throw new Error('Invalid file format. No maps or pins array.');
       }
 
-      await clearDBStore('maps');
-      await clearDBStore('pins');
-      await clearDBStore('areas');
-      await clearDBStore('settings');
-
-      for (const map of importedData.maps) {
-        await saveDBItem('maps', map);
-      }
-      for (const pin of importedData.pins) {
-        await saveDBItem('pins', pin);
-      }
-      if (importedData.areas) {
-        for (const area of importedData.areas) {
-          await saveDBItem('areas', area);
-        }
-      }
+      await replaceAll({
+        maps: importedData.maps,
+        pins: importedData.pins,
+        areas: importedData.areas || []
+      });
 
       if (importedData.settings) {
         if (importedData.settings.customSpecies) localStorage.setItem('tm_customSpecies', JSON.stringify(importedData.settings.customSpecies));
@@ -565,11 +501,19 @@ ui.importDataUpload.addEventListener('change', (e) => {
           localStorage.setItem('tm_speciesColors', JSON.stringify(colors));
         }
 
-        if (importedData.settings.visibleGroups) localStorage.setItem('tm_visibleGroups', JSON.stringify(importedData.settings.visibleGroups));
+        if (Array.isArray(importedData.settings.hiddenGroups)) {
+          localStorage.setItem('tm_hiddenGroups', JSON.stringify(importedData.settings.hiddenGroups));
+        } else if (Array.isArray(importedData.settings.visibleGroups)) {
+          // 旧形式 (v1.1.0 以前) のファイル: 表示グループ → 隠すグループに変換する
+          const s = importedData.settings;
+          const known = collectGroups(s.customGroups || [], importedData.pins, importedData.areas || []);
+          const hidden = known.filter(g => !s.visibleGroups.includes(g));
+          localStorage.setItem('tm_hiddenGroups', JSON.stringify(hidden));
+        }
       }
-      
+
       if (importedData.maps && importedData.maps.length > 0) {
-        await saveDBItem('settings', { key: 'activeMapId', value: importedData.maps[0].id });
+        await setSetting('activeMapId', importedData.maps[0].id);
       }
 
       alert('データのインポートが完了しました。アプリを再読み込みします。');
@@ -599,11 +543,10 @@ ui.mapUploadBtn.addEventListener('change', async (e) => {
     const mapName = prompt('マップの名前を入力してください', `マップ ${state.maps.length + 1}`) || `Map ${state.maps.length + 1}`;
     const dataUrl = await compressImage(file, 2048, 0.8); 
     
-    const mapId = 'map_' + Date.now();
-    const newMap = { id: mapId, name: mapName, image: dataUrl, createdAt: Date.now() };
-    await saveDBItem('maps', newMap);
-    
-    state.maps.push({ id: mapId, name: mapName });
+    const mapId = newId('map');
+    await saveMap({ id: mapId, name: mapName, image: dataUrl });
+
+    state.maps = await listMaps();
     await loadMapData(mapId);
   } catch(err) {
     alert('画像の処理に失敗しました。');
@@ -805,7 +748,7 @@ function getPinSVG(color) {
 function renderPins() {
   ui.pinsContainer.innerHTML = '';
   state.pins.forEach(pin => {
-    if (!state.visibleGroups.includes(pin.group)) return;
+    if (!isGroupVisible(pin.group)) return;
 
     const el = document.createElement('div');
     el.className = 'map-pin';
@@ -827,7 +770,7 @@ function renderAreas() {
   ui.areasSvg.innerHTML = '';
 
   state.areas.forEach(area => {
-    if (!state.visibleGroups.includes(area.group)) return;
+    if (!isGroupVisible(area.group)) return;
 
     const color = /^#[0-9a-fA-F]{3,6}$/.test(area.color) ? area.color : '#22c55e';
     const pointsStr = area.points.map(p => `${p.x},${p.y}`).join(' ');
@@ -1038,13 +981,18 @@ function renderAreaColorPalette() {
 }
 
 function openAreaModal(areaId = null) {
+  // 対象のエリアが既に無い (他の人が削除した等) 場合は、モーダルを開かず表示を更新する
+  const area = areaId ? state.areas.find(a => a.id === areaId) : null;
+  if (areaId && !area) {
+    renderAreas();
+    return;
+  }
+
   state.activeAreaId = areaId;
   ui.areaModalBackdrop.classList.remove('hidden');
   ui.areaNewGroupWrapper.style.display = 'none';
 
   if (areaId) {
-    const area = state.areas.find(a => a.id === areaId);
-    if (!area) return;
     ui.areaModalTitle.textContent = 'エリアの確認・編集';
     ui.areaLabel.value = area.label || '';
     ui.areaGroupSelect.value = area.group;
@@ -1096,19 +1044,12 @@ ui.areaForm.addEventListener('submit', async (e) => {
     if (!group) return alert('グループ名を入力してください。');
     if (!state.customGroups.includes(group)) {
       state.customGroups.push(group);
-      const opt = document.createElement('option');
-      opt.value = group; opt.textContent = group;
-      ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
-      const opt2 = document.createElement('option');
-      opt2.value = group; opt2.textContent = group;
-      ui.areaGroupSelect.insertBefore(opt2, ui.areaGroupSelect.lastElementChild);
     }
   }
 
-  if (!state.visibleGroups.includes(group)) {
-    state.visibleGroups.push(group);
-  }
+  showGroup(group);
   saveLocalSettings();
+  renderSelectOptions();
 
   const label = ui.areaLabel.value.trim();
   let areaData;
@@ -1123,21 +1064,20 @@ ui.areaForm.addEventListener('submit', async (e) => {
     }
   } else {
     areaData = {
-      id: 'area_' + Date.now().toString(),
+      id: newId('area'),
       mapId: state.activeMapId,
       type: state.hedgeMode,
       points: [...state.currentPoints],
       group,
       label,
-      color: state.selectedAreaColor,
-      createdAt: Date.now()
+      color: state.selectedAreaColor
     };
   }
 
   if (areaData) {
     try {
       ui.loader.classList.remove('hidden');
-      await saveDBItem('areas', areaData);
+      await saveArea(areaData);
       if (!state.activeAreaId) {
         state.areas.push(areaData);
       }
@@ -1158,7 +1098,7 @@ ui.areaForm.addEventListener('submit', async (e) => {
 ui.areaModalDelete.addEventListener('click', async () => {
   if (confirm('このエリアを削除しますか？')) {
     ui.loader.classList.remove('hidden');
-    await deleteDBItem('areas', state.activeAreaId);
+    await deleteArea(state.activeAreaId);
     state.areas = state.areas.filter(a => a.id !== state.activeAreaId);
     renderAreas();
     renderFilterPanel();
@@ -1234,13 +1174,19 @@ function setPhotoPreview(src) {
 }
 
 function openModal(pinId = null, pos = null) {
+  // 対象のピンが既に無い (他の人が削除した等) 場合は、モーダルを開かず表示を更新する
+  const pin = pinId ? state.pins.find(p => p.id === pinId) : null;
+  if (pinId && !pin) {
+    renderPins();
+    return;
+  }
+
   state.activePinId = pinId;
   ui.modalBackdrop.classList.remove('hidden');
   ui.newGroupWrapper.style.display = 'none';
   ui.newSpeciesGroup.style.display = 'none';
-  
+
   if (pinId) {
-    const pin = state.pins.find(p => p.id === pinId);
     ui.modalTitle.textContent = '樹木の編集';
     ui.pinGroupSelect.value = pin.group;
     ui.treeSpecies.value = pin.species;
@@ -1293,12 +1239,6 @@ ui.pinForm.addEventListener('submit', async (e) => {
     if (!group) return alert('グループ名を入力してください。');
     if (!state.customGroups.includes(group)) {
       state.customGroups.push(group);
-      const opt = document.createElement('option');
-      opt.value = group; opt.textContent = group;
-      ui.pinGroupSelect.insertBefore(opt, ui.pinGroupSelect.lastElementChild);
-      const opt2 = document.createElement('option');
-      opt2.value = group; opt2.textContent = group;
-      ui.areaGroupSelect.insertBefore(opt2, ui.areaGroupSelect.lastElementChild);
     }
   }
 
@@ -1310,17 +1250,13 @@ ui.pinForm.addEventListener('submit', async (e) => {
     state.speciesColors[species] = state.selectedNewColor;
     if (!state.customSpecies.includes(species)) {
       state.customSpecies.push(species);
-      const opt = document.createElement('option');
-      opt.value = species; opt.textContent = species;
-      ui.treeSpecies.insertBefore(opt, ui.treeSpecies.lastElementChild);
     }
   }
-  
-  if (!state.visibleGroups.includes(group)) {
-    state.visibleGroups.push(group);
-  }
+
+  showGroup(group);
   saveLocalSettings();
-  
+  renderSelectOptions();
+
   const label = ui.treeLabel.value.trim();
   let pinData;
   if (state.activePinId) {
@@ -1334,7 +1270,7 @@ ui.pinForm.addEventListener('submit', async (e) => {
     }
   } else if (state.tempClickPos) {
     pinData = {
-      id: Date.now().toString(),
+      id: newId('pin'),
       mapId: state.activeMapId,
       x: state.tempClickPos.x,
       y: state.tempClickPos.y,
@@ -1348,7 +1284,7 @@ ui.pinForm.addEventListener('submit', async (e) => {
   if (pinData) {
     try {
       ui.loader.classList.remove('hidden');
-      await saveDBItem('pins', pinData);
+      await savePin(pinData);
       
       if (!state.activePinId && state.tempClickPos) {
         state.pins.push(pinData);
@@ -1372,7 +1308,7 @@ ui.modalBackdrop.addEventListener('click', (e) => { if (e.target === ui.modalBac
 ui.modalDelete.addEventListener('click', async () => {
   if (confirm('このピンを削除しますか？')) {
     ui.loader.classList.remove('hidden');
-    await deleteDBItem('pins', state.activePinId);
+    await deletePin(state.activePinId);
     state.pins = state.pins.filter(p => p.id !== state.activePinId);
     renderPins();
     ui.loader.classList.add('hidden');
