@@ -6,6 +6,7 @@ import {
   listAllGroups, getSetting, setSetting, removeSetting,
   exportAll, replaceAll
 } from './repository.js';
+import { checkAccess, bindAuthUi } from './auth.js';
 
 // --- Image Compression ---
 function compressImage(file, maxSize = 800, quality = 0.7) {
@@ -149,6 +150,9 @@ let state = {
 
 // --- Boot ---
 async function init() {
+  bindAuthUi();
+  const access = await checkAccess();
+  if (access !== 'local' && access !== 'ok') return; // ログイン前・未登録・通信エラー時はデータを読み込まない
   ui.loader.classList.remove('hidden');
   try {
     await initRepository();

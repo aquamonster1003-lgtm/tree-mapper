@@ -595,3 +595,16 @@ h1.title { font-size: 2rem; margin-bottom: 0.5rem; font-weight: 700; color: #158
     transform: translateY(0);
   }
 }
+
+/* --- ログイン画面 --- */
+.auth-screen {
+  position: fixed; inset: 0; z-index: 3000;
+  display: flex; align-items: center; justify-content: center;
+  padding: 1rem; background: var(--bg-dark);
+}
+.auth-screen.hidden { display: none; }
+.auth-card { width: 100%; max-width: 360px; padding: 1.5rem; text-align: center; }
+.auth-card h2 { margin-bottom: 1rem; }
+.auth-card p { margin-bottom: 1rem; line-height: 1.5; }
+.auth-email { font-weight: bold; word-break: break-all; }
+.auth-note { font-size: 0.8rem; color: var(--text-secondary); }
