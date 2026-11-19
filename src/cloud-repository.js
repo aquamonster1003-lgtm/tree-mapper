@@ -26,7 +26,21 @@ async function dataUrlToBlob(dataUrl) {
   return await (await fetch(dataUrl)).blob();
 }
 
-export function createCloudRepository(sb) {
+const blobToDataUrl = (blob) => new Promise((resolve, reject) => {
+  const reader = new FileReader();
+  reader.onload = () => resolve(reader.result);
+  reader.onerror = () => reject(reader.error);
+  reader.readAsDataURL(blob);
+});
+
+// 署名付き URL の画像を Data URL にする (書き出し用)
+async function fetchAsDataUrl(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`画像の取得に失敗 (${res.status})`);
+  return await blobToDataUrl(await res.blob());
+}
+
+export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
   async function uploadImage(bucket, id, dataUrl) {
     const blob = await dataUrlToBlob(dataUrl);
     const path = `${id}.${EXT[blob.type] || 'bin'}`;
@@ -168,6 +182,52 @@ export function createCloudRepository(sb) {
     must(await sb.from('areas').update({ deleted_at: new Date().toISOString() }).eq('id', id));
   }
 
+  // --- クラウドのデータを書き出す (バックアップ) ---
+  // 端末内版の exportAll() と同じ形 (画像・写真は Data URL)。論理削除済みは含めない。
+  // 画像が取れなかったものは、黙って欠けないよう、失敗として例外にする。
+  async function exportAll() {
+    const mapRows = await fetchAll(() => sb.from('maps').select('*').is('deleted_at', null).order('created_at').order('id'));
+    const pinRows = await fetchAll(() => sb.from('pins').select('*').is('deleted_at', null).order('created_at').order('id'));
+    const areaRows = await fetchAll(() => sb.from('areas').select('*').is('deleted_at', null).order('created_at').order('id'));
+
+    const mapUrls = new Map(); const pinUrls = new Map();
+    const sign = async (bucket, paths, into) => {
+      const list = [...new Set(paths.filter(Boolean))];
+      for (let i = 0; i < list.length; i += 100) (await signAll(bucket, list.slice(i, i + 100))).forEach((v, k) => into.set(k, v));
+    };
+    await sign(MAP_BUCKET, mapRows.map((r) => r.image_path), mapUrls);
+    await sign(PIN_BUCKET, pinRows.map((r) => r.photo_path), pinUrls);
+
+    const missing = [];
+    const maps = [];
+    for (const r of mapRows) {
+      let image = null;
+      if (r.image_path) {
+        const url = mapUrls.get(r.image_path);
+        if (!url) missing.push(`マップ画像 ${r.name}`); else image = await toDataUrl(url);
+      }
+      maps.push({ ...mapMeta(r), image });
+    }
+
+    const pins = new Array(pinRows.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < pinRows.length) {
+        const i = next++; const r = pinRows[i];
+        let photo = null;
+        if (r.photo_path) {
+          const url = pinUrls.get(r.photo_path);
+          if (!url) missing.push(`ピン写真 ${r.label || r.id}`); else photo = await toDataUrl(url);
+        }
+        pins[i] = { id: r.id, mapId: r.map_id, x: r.x, y: r.y, group: r.group_name, species: r.species, label: r.label, photo, createdAt: ms(r.created_at), updatedAt: ms(r.updated_at) };
+      }
+    };
+    await Promise.all([worker(), worker(), worker(), worker()]);
+
+    if (missing.length) throw new Error(`画像を取得できないデータがあります: ${missing.slice(0, 5).join('、')}`);
+    return { maps, pins, areas: areaRows.map(areaFromRow) };
+  }
+
   // --- この端末のデータをクラウドへ ---
   // local = local-repository の exportAll() の結果 (画像つき)。ID は変えずに送る。
   // 安全のため「クラウドにまだ無いものだけ」を追加する。すでにあるもの (他の人や自分が後から編集・削除したものを含む)
@@ -265,6 +325,6 @@ export function createCloudRepository(sb) {
     listMaps, getMap, saveMap, deleteMap,
     listPins, savePin, deletePin,
     listAreas, saveArea, deleteArea,
-    uploadLocalToCloud
+    uploadLocalToCloud, exportAll
   };
 }
