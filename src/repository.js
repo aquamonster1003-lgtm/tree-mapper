@@ -30,3 +30,9 @@ export const {
 export const exportAll = cloud ? cloud.exportAll : local.exportAll;
 
 export const uploadLocalToCloud = cloud ? cloud.uploadLocalToCloud : null;
+
+// 共有設定 (樹種・グループ・色)。クラウド版のみ。端末内版は main.js が localStorage で扱う
+export const loadSharedSettings = cloud ? cloud.loadSharedSettings : null;
+export const addSpecies = cloud ? cloud.addSpecies : null;
+export const addGroup = cloud ? cloud.addGroup : null;
+export const uploadSharedSettings = cloud ? cloud.uploadSharedSettings : null;

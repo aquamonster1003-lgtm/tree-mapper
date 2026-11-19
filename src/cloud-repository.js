@@ -182,6 +182,59 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
     must(await sb.from('areas').update({ deleted_at: new Date().toISOString() }).eq('id', id));
   }
 
+  // --- 共有設定 (樹種・グループ) ---
+  // 追加だけができる (更新・削除は DB 側で禁止)。樹種の色は DB の一意制約で重複を防ぐ。
+  const HEX = /^#[0-9a-fA-F]{6}$/;
+
+  async function loadSharedSettings() {
+    const [species, groups] = await Promise.all([
+      fetchAll(() => sb.from('species').select('name,color').order('created_at').order('name')),
+      fetchAll(() => sb.from('groups').select('name').order('created_at').order('name'))
+    ]);
+    return { species: species.map((r) => ({ name: r.name, color: r.color })), groups: groups.map((r) => r.name) };
+  }
+
+  const isUnique = (error) => error && error.code === '23505';
+
+  // 戻り値: 'added' | 'exists' (同じ名前が既にある) | 'color-taken' (色が他の樹種で使われている)。通信失敗などは例外
+  async function addSpecies(name, color) {
+    const { error } = await sb.from('species').insert({ name, color });
+    if (!error) return 'added';
+    if (isUnique(error)) return /color/i.test(`${error.message} ${error.details || ''}`) ? 'color-taken' : 'exists';
+    throw error;
+  }
+
+  async function addGroup(name) {
+    const { error } = await sb.from('groups').insert({ name });
+    if (error && !isUnique(error)) throw error; // 既にあるのは問題なし
+  }
+
+  // 端末 / バックアップファイルの設定を、クラウドに無いものだけ追加する (既存は触らない)
+  async function uploadSharedSettings(settings = {}) {
+    const result = { species: 0, groups: 0, existing: 0, colorConflicts: [] };
+    const cloud = await loadSharedSettings();
+    const haveSpecies = new Set(cloud.species.map((x) => x.name));
+    const haveGroups = new Set(cloud.groups);
+    const colors = settings.speciesColors || {};
+
+    for (const name of settings.customSpecies || []) {
+      if (haveSpecies.has(name)) { result.existing++; continue; }
+      const color = colors[name];
+      if (!HEX.test(color || '')) continue; // 色が分からない樹種は送らない (ピンは既定色で表示される)
+      const r = await addSpecies(name, color.toLowerCase());
+      if (r === 'added') { result.species++; haveSpecies.add(name); }
+      else if (r === 'color-taken') result.colorConflicts.push(name);
+      else result.existing++;
+    }
+    for (const name of settings.customGroups || []) {
+      if (haveGroups.has(name) || name === 'デフォルト') { result.existing++; continue; }
+      await addGroup(name);
+      result.groups++;
+      haveGroups.add(name);
+    }
+    return result;
+  }
+
   // --- クラウドのデータを書き出す (バックアップ) ---
   // 端末内版の exportAll() と同じ形 (画像・写真は Data URL)。論理削除済みは含めない。
   // 画像が取れなかったものは、黙って欠けないよう、失敗として例外にする。
@@ -325,6 +378,7 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
     listMaps, getMap, saveMap, deleteMap,
     listPins, savePin, deletePin,
     listAreas, saveArea, deleteArea,
-    uploadLocalToCloud, exportAll
+    uploadLocalToCloud, exportAll,
+    loadSharedSettings, addSpecies, addGroup, uploadSharedSettings
   };
 }

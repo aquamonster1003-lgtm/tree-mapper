@@ -5,7 +5,8 @@ import {
   listPins, savePin, deletePin,
   listAreas, saveArea, deleteArea,
   listAllGroups, getSetting, setSetting, removeSetting,
-  exportAll, exportLocalAll, replaceAll, isCloud, uploadLocalToCloud
+  exportAll, exportLocalAll, replaceAll, isCloud, uploadLocalToCloud,
+  loadSharedSettings, addSpecies, addGroup, uploadSharedSettings
 } from './repository.js';
 import { checkAccess, bindAuthUi } from './auth.js';
 
@@ -156,8 +157,16 @@ let state = {
 // --- クラウド版: この端末のデータをアップロード ---
 const UPLOAD_ASKED_KEY = 'tm_cloudUploadAsked';
 
-async function runCloudUpload(local) {
+// この端末に保存されている、樹種・グループ・色の設定 (クラウド版では書き換えない = アップロード元として残る)
+function readLocalSharedSettings() {
+  const read = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } };
+  return { customSpecies: read('tm_customSpecies', []), speciesColors: read('tm_speciesColors', {}), customGroups: read('tm_customGroups', []) };
+}
+
+// local: { maps, pins, areas }、settings: { customSpecies, speciesColors, customGroups } (省略時はこの端末の値)
+async function runCloudUpload(local, settings) {
   local = local || await exportLocalAll();
+  settings = settings || readLocalSharedSettings();
   const status = document.getElementById('cloud-upload-status');
   const btn = document.getElementById('cloud-upload-btn');
   btn.disabled = true;
@@ -166,13 +175,26 @@ async function runCloudUpload(local) {
     const result = await uploadLocalToCloud(local, (done, total) => {
       status.textContent = `アップロード中... ${done} / ${total}`;
     });
+    let shared = { species: 0, groups: 0, colorConflicts: [] };
+    let sharedFailed = false;
+    try {
+      shared = await uploadSharedSettings(settings);
+      await refreshSharedSettings();
+      renderSelectOptions();
+    } catch (err) {
+      console.error(err);
+      sharedFailed = true;
+    }
     const lines = [`マップ ${result.maps}件、ピン ${result.pins}件(写真 ${result.photos}枚)、エリア ${result.areas}件をアップロードしました。`];
+    if (shared.species || shared.groups) lines.push(`樹種 ${shared.species}件、グループ ${shared.groups}件を追加しました。`);
+    if (shared.colorConflicts.length) lines.push(`色が他の樹種と重なるため追加できなかった樹種: ${shared.colorConflicts.join('、')}(そのピンは既定色で表示されます)`);
     if (result.remappedMaps) lines.push(`ID が重複した別のマップ ${result.remappedMaps}件は、新しい ID で追加しました。`);
     if (result.skipped) lines.push(`マップが見つからないデータ ${result.skipped}件は、送りませんでした。`);
+    if (sharedFailed) lines.push('樹種・グループの設定を保存できませんでした。もう一度実行してください。');
     if (result.failed.length) lines.push(`失敗: ${result.failed.slice(0, 5).join('、')}${result.failed.length > 5 ? ` ほか${result.failed.length - 5}件` : ''}。もう一度実行すると、残りだけ送れます。`);
     status.textContent = lines.join('\n');
     status.style.whiteSpace = 'pre-line';
-    if (!result.failed.length) localStorage.setItem(UPLOAD_ASKED_KEY, 'done');
+    if (!result.failed.length && !sharedFailed) localStorage.setItem(UPLOAD_ASKED_KEY, 'done');
     return result;
   } catch (err) {
     console.error(err);
@@ -211,7 +233,7 @@ async function setupCloudUpload() {
     const alive = (list) => (list || []).filter((x) => x && !x.deletedAt);
     const payload = { maps: alive(data.maps), pins: alive(data.pins), areas: alive(data.areas) };
     if (!confirm(`ファイルの内容をクラウドに追加します。\nマップ${payload.maps.length}件・ピン${payload.pins.length}件・エリア${payload.areas.length}件\nよろしいですか?`)) return;
-    await runCloudUpload(payload);
+    await runCloudUpload(payload, data.settings || {});
     state.maps = await listMaps();
     if (state.activeMapId) await loadMapData(state.activeMapId); else await loadInitialData();
   });
@@ -238,6 +260,7 @@ async function init() {
   ui.loader.classList.remove('hidden');
   try {
     await initRepository();
+    if (isCloud) await refreshSharedSettings();
     await checkMigration();
     await migrateVisibleToHiddenGroups();
     if (isCloud) await setupCloudUpload();
@@ -304,6 +327,7 @@ async function loadInitialData() {
 
 async function loadMapData(mapId) {
   ui.loader.classList.remove('hidden');
+  if (isCloud) await refreshSharedSettings().catch((err) => console.warn('共有設定の更新に失敗 (前回の値を使います)', err));
   const mapData = await getMap(mapId);
   if (!mapData) {
     ui.loader.classList.add('hidden');
@@ -372,10 +396,56 @@ ui.mapSelector.addEventListener('change', async (e) => {
 });
 
 function saveLocalSettings() {
-  localStorage.setItem('tm_customSpecies', JSON.stringify(state.customSpecies));
-  localStorage.setItem('tm_speciesColors', JSON.stringify(state.speciesColors));
-  localStorage.setItem('tm_customGroups', JSON.stringify(state.customGroups));
+  // クラウド版では、樹種・グループ・色は全員で共有 (クラウドに保存)。端末には、表示するグループだけを残す
+  if (!isCloud) {
+    localStorage.setItem('tm_customSpecies', JSON.stringify(state.customSpecies));
+    localStorage.setItem('tm_speciesColors', JSON.stringify(state.speciesColors));
+    localStorage.setItem('tm_customGroups', JSON.stringify(state.customGroups));
+  }
   localStorage.setItem('tm_hiddenGroups', JSON.stringify(state.hiddenGroups));
+}
+
+// --- 共有設定 (クラウド版): 樹種・グループ・色 ---
+const BUILTIN_SPECIES_COLORS = { shirakashi: '#10b981', keyaki: '#f59e0b' };
+
+async function refreshSharedSettings() {
+  const shared = await loadSharedSettings();
+  const builtin = new Set(Object.keys(BUILTIN_SPECIES_COLORS));
+  state.customSpecies = shared.species.map((x) => x.name).filter((n) => !builtin.has(n));
+  state.speciesColors = Object.assign({}, BUILTIN_SPECIES_COLORS, Object.fromEntries(shared.species.map((x) => [x.name, x.color])));
+  state.customGroups = shared.groups;
+}
+
+// 新しいグループ・樹種を登録する。false なら、保存を中止する (理由は表示済み)
+async function registerNewGroup(name) {
+  if (state.customGroups.includes(name)) return true;
+  if (isCloud) {
+    try { await addGroup(name); } catch (err) { console.error(err); alert('グループを保存できませんでした。通信状況を確認して、もう一度お試しください。'); return false; }
+  }
+  state.customGroups.push(name);
+  return true;
+}
+
+async function registerNewSpecies(name, color) {
+  if (!isCloud) {
+    state.speciesColors[name] = color;
+    if (!state.customSpecies.includes(name)) state.customSpecies.push(name);
+    return true;
+  }
+  try {
+    const result = await addSpecies(name, color);
+    await refreshSharedSettings(); // 他の人が先に作った同名の樹種は、その色を採用する
+    if (result === 'color-taken') {
+      renderColorPalette();
+      alert('この色は、ほかの人がすでに使っています。別の色を選んでください。');
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(err);
+    alert('樹種を保存できませんでした。通信状況を確認して、もう一度お試しください。');
+    return false;
+  }
 }
 
 // 組み込みの樹種 (value は保存済みデータとの互換のため変更しない)
@@ -1144,9 +1214,7 @@ ui.areaForm.addEventListener('submit', async (e) => {
   if (group === '__add_new__') {
     group = ui.areaNewGroupInput.value.trim();
     if (!group) return alert('グループ名を入力してください。');
-    if (!state.customGroups.includes(group)) {
-      state.customGroups.push(group);
-    }
+    if (!(await registerNewGroup(group))) return;
   }
 
   showGroup(group);
@@ -1351,20 +1419,14 @@ ui.pinForm.addEventListener('submit', async (e) => {
   if (group === '__add_new__') {
     group = ui.newGroupInput.value.trim();
     if (!group) return alert('グループ名を入力してください。');
-    if (!state.customGroups.includes(group)) {
-      state.customGroups.push(group);
-    }
+    if (!(await registerNewGroup(group))) return;
   }
 
   let species = ui.treeSpecies.value;
   if (species === '__add_new__') {
     species = ui.newSpeciesInput.value.trim();
     if (!species) return alert('種類名を入力してください。');
-    
-    state.speciesColors[species] = state.selectedNewColor;
-    if (!state.customSpecies.includes(species)) {
-      state.customSpecies.push(species);
-    }
+    if (!(await registerNewSpecies(species, state.selectedNewColor))) return;
   }
 
   showGroup(group);
