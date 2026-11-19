@@ -27,3 +27,6 @@ dist-ssr
 .env
 .env.*
 !.env.example
+
+# 検証スクリプトが誤って作る一時フォルダ
+/undefined/

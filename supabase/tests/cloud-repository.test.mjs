@@ -8,9 +8,11 @@ const check = (name, ok, detail = '') => { if (!ok) failures++; console.log(`${o
 
 // --- 代用品 ---
 function makeFake() {
-  const tables = { maps: [], pins: [], areas: [] };
+  const tables = { maps: [], pins: [], areas: [],
+    species: [{ name: 'shirakashi', color: '#10b981', created_at: '2026-01-01' }, { name: 'keyaki', color: '#f59e0b', created_at: '2026-01-01' }],
+    groups: [] };
   const files = { 'map-images': new Map(), 'pin-photos': new Map() };
-  const log = { rpc: [], failUpload: new Set(), failUpsert: new Set() };
+  const log = { rpc: [], failUpload: new Set(), failUpsert: new Set(), failInsert: false };
   let clock = Date.parse('2026-11-19T00:00:00Z');
   const now = () => new Date(clock += 1000).toISOString();
 
@@ -19,6 +21,7 @@ function makeFake() {
     const q = {
       select() { return q; },
       upsert(p) { op = 'upsert'; payload = p; return q; },
+      insert(p) { op = 'insert'; payload = p; return q; },
       update(p) { op = 'update'; payload = p; return q; },
       eq(c, v) { filters.push((r) => r[c] === v); return q; },
       is(c, v) { filters.push((r) => (r[c] ?? null) === v); return q; },
@@ -30,6 +33,14 @@ function makeFake() {
     };
     async function run() {
       const rows = tables[table];
+      if (op === 'insert') {
+        // species / groups: 主キー (name) と、species.color の一意制約を、本物の DB と同じエラーで再現
+        if (log.failInsert) return { data: null, error: { message: 'network' } };
+        if (rows.some((r) => r.name === payload.name)) return { data: null, error: { code: '23505', message: `duplicate key value violates unique constraint "${table}_pkey"`, details: `Key (name)=(${payload.name}) already exists.` } };
+        if (table === 'species' && rows.some((r) => r.color === payload.color)) return { data: null, error: { code: '23505', message: 'duplicate key value violates unique constraint "species_color_key"', details: `Key (color)=(${payload.color}) already exists.` } };
+        rows.push({ created_at: now(), ...payload });
+        return { data: null, error: null };
+      }
       if (op === 'upsert') {
         if (log.failUpsert.has(payload.id)) return { data: null, error: { message: 'boom' } };
         const i = rows.findIndex((r) => r.id === payload.id);
@@ -227,6 +238,51 @@ console.log('\n[クラウドのデータを書き出す]');
   f.files['pin-photos'].delete('pin_1.jpg');
   let err = null; try { await r.exportAll(); } catch (e) { err = e.message; }
   check('画像を取得できないときは、例外にする (欠けたバックアップを作らない)', !!err && err.includes('画像を取得できない'), err);
+}
+
+
+console.log('\n[共有設定: 樹種・グループ]');
+{
+  const f = makeFake(); const r = createCloudRepository(f.client);
+  let s = await r.loadSharedSettings();
+  check('組み込み樹種 (シラカシ・ケヤキ) が最初から入っている', s.species.length === 2 && s.species.some((x) => x.name === 'keyaki' && x.color === '#f59e0b') && s.groups.length === 0);
+  check('樹種を追加できる', (await r.addSpecies('サクラ', '#ec4899')) === 'added');
+  check('同じ名前の樹種は「既にある」', (await r.addSpecies('サクラ', '#111111')) === 'exists');
+  check('他の樹種と同じ色は「色が使用済み」', (await r.addSpecies('ウメ', '#ec4899')) === 'color-taken');
+  check('組み込み樹種の色も取れない', (await r.addSpecies('クスノキ', '#10b981')) === 'color-taken');
+  check('色が重なった樹種は追加されない', !(f.tables.species.some((x) => x.name === 'ウメ' || x.name === 'クスノキ')));
+  await r.addGroup('A'); await r.addGroup('A');
+  s = await r.loadSharedSettings();
+  check('グループは追加でき、同じ名前は重複しない (エラーにもならない)', s.groups.length === 1 && s.groups[0] === 'A');
+  s = await r.loadSharedSettings();
+  check('取得すると、追加した樹種と色が戻る', s.species.find((x) => x.name === 'サクラ')?.color === '#ec4899');
+  f.log.failInsert = true;
+  let err = null; try { await r.addSpecies('エラー', '#222222'); } catch (e) { err = e.message; }
+  check('通信エラーは例外にする (「既にある」と誤認しない)', err === 'network');
+  let err2 = null; try { await r.addGroup('エラー'); } catch (e) { err2 = e.message; }
+  check('グループも通信エラーは例外', err2 === 'network');
+}
+
+console.log('\n[共有設定のアップロード]');
+{
+  const f = makeFake(); const r = createCloudRepository(f.client);
+  await r.addSpecies('サクラ', '#ec4899'); await r.addGroup('A');
+  const res = await r.uploadSharedSettings({
+    customSpecies: ['サクラ', 'ウメ', 'マツ', 'ヤナギ', '色不明', '不正な色'],
+    speciesColors: { サクラ: '#EC4899', ウメ: '#ec4899', マツ: '#16A34A', ヤナギ: '#10b981', 不正な色: 'red' },
+    customGroups: ['A', 'B', 'デフォルト']
+  });
+  const names = f.tables.species.map((x) => x.name);
+  check('クラウドに無い樹種だけが追加される (マツ)', res.species === 1 && names.includes('マツ'), JSON.stringify(res));
+  check('色の大文字・小文字は揃えて保存される', f.tables.species.find((x) => x.name === 'マツ')?.color === '#16a34a');
+  check('色が重なる樹種は追加せず、報告する (ウメ・ヤナギ)', res.colorConflicts.length === 2 && res.colorConflicts.includes('ウメ') && res.colorConflicts.includes('ヤナギ') && !names.includes('ウメ'), res.colorConflicts.join(','));
+  check('色が不明・不正な樹種は送らない', !names.includes('色不明') && !names.includes('不正な色'));
+  check('既にある樹種・グループは触らない (色も変えない)', f.tables.species.find((x) => x.name === 'サクラ').color === '#ec4899' && res.existing >= 2);
+  check('グループは新しいものだけ追加 (B)。「デフォルト」は送らない', res.groups === 1 && f.tables.groups.map((x) => x.name).sort().join() === 'A,B');
+  const again = await r.uploadSharedSettings({ customSpecies: ['マツ'], speciesColors: { マツ: '#16a34a' }, customGroups: ['B'] });
+  check('再実行しても何も増えない', again.species === 0 && again.groups === 0 && again.existing === 2);
+  const empty = await r.uploadSharedSettings({});
+  check('設定が無いファイルでも、例外にならない', empty.species === 0 && empty.groups === 0);
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
