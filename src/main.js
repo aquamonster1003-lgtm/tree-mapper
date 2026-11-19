@@ -557,11 +557,6 @@ ui.importDataUpload.addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
   
-  if (!confirm('現在のデータはすべて消去され、ファイルの内容で完全に上書きされます。\nよろしいですか？')) {
-    e.target.value = '';
-    return;
-  }
-  
   ui.loader.classList.remove('hidden');
   const reader = new FileReader();
   reader.onload = async (ev) => {
@@ -570,6 +565,21 @@ ui.importDataUpload.addEventListener('change', (e) => {
       
       if (!importedData.maps || !importedData.pins) {
         throw new Error('Invalid file format. No maps or pins array.');
+      }
+
+      // 空のファイルで、いまのデータを消してしまう事故を防ぐ。内容を見せてから確認する
+      const alive = (list) => (Array.isArray(list) ? list : []).filter((x) => x && !x.deletedAt);
+      const counts = { maps: alive(importedData.maps).length, pins: alive(importedData.pins).length, areas: alive(importedData.areas).length };
+      if (counts.maps === 0) {
+        ui.loader.classList.add('hidden');
+        e.target.value = '';
+        alert('このファイルにはマップが入っていません (中身が空です)。\n読み込むと、いまのデータが消えて空になるため、中止しました。\n\n書き出した場所 (URL) が正しいか確認してください。');
+        return;
+      }
+      if (!confirm(`ファイルの内容: マップ${counts.maps}件・ピン${counts.pins}件・エリア${counts.areas}件\n\n現在のデータはすべて消去され、ファイルの内容で完全に上書きされます。\nよろしいですか？`)) {
+        ui.loader.classList.add('hidden');
+        e.target.value = '';
+        return;
       }
 
       await replaceAll({
