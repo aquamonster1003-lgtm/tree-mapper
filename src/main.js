@@ -1,3 +1,4 @@
+import { openPhotoViewer } from './photo-viewer.js';
 import {
   initRepository, newId,
   listMaps, getMap, saveMap, deleteMap,
@@ -97,6 +98,8 @@ const ui = {
   pinPhotoInput: document.getElementById('pin-photo'),
   pinPhotoPreview: document.getElementById('pin-photo-preview'),
   photoPlaceholder: document.getElementById('photo-placeholder'),
+  photoPreviewBox: document.getElementById('photo-preview-box'),
+  changePhotoBtn: document.getElementById('change-photo-btn'),
   removePhotoBtn: document.getElementById('remove-photo-btn'),
 
   // Area Modal
@@ -1163,17 +1166,24 @@ ui.removePhotoBtn.addEventListener('click', () => {
   setPhotoPreview(null);
 });
 
+// 写真があるとき: タップで拡大表示 (差し替えは「写真を変更」)。ないとき: タップで写真を選ぶ
+ui.pinPhotoPreview.addEventListener('click', () => openPhotoViewer(ui.pinPhotoPreview.getAttribute('src')));
+
 function setPhotoPreview(src) {
   if (src) {
     ui.pinPhotoPreview.src = src;
     ui.pinPhotoPreview.classList.remove('hidden');
     ui.photoPlaceholder.classList.add('hidden');
     ui.removePhotoBtn.classList.remove('hidden');
+    ui.changePhotoBtn.classList.remove('hidden');
+    ui.photoPreviewBox.classList.add('has-photo');
   } else {
     ui.pinPhotoPreview.src = '';
     ui.pinPhotoPreview.classList.add('hidden');
     ui.photoPlaceholder.classList.remove('hidden');
     ui.removePhotoBtn.classList.add('hidden');
+    ui.changePhotoBtn.classList.add('hidden');
+    ui.photoPreviewBox.classList.remove('has-photo');
   }
 }
 

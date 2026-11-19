@@ -608,3 +608,42 @@ h1.title { font-size: 2rem; margin-bottom: 0.5rem; font-weight: 700; color: #158
 .auth-card p { margin-bottom: 1rem; line-height: 1.5; }
 .auth-email { font-weight: bold; word-break: break-all; }
 .auth-note { font-size: 0.8rem; color: var(--text-secondary); }
+
+/* --- 写真の拡大表示 --- */
+.photo-preview-box.has-photo { cursor: zoom-in; border-style: solid; }
+.photo-preview-box.has-photo input[type="file"] { pointer-events: none; } /* 写真があるときは、タップを拡大に使う */
+.photo-preview-box.has-photo::after {
+  content: '🔍 タップで拡大';
+  position: absolute; right: 6px; bottom: 6px;
+  background: rgba(0,0,0,0.55); color: #fff; font-size: 0.7rem;
+  padding: 2px 8px; border-radius: 999px; pointer-events: none;
+}
+.photo-actions { display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+.photo-actions .icon-btn { line-height: 1.4; }
+
+.photo-viewer {
+  position: fixed; inset: 0; z-index: 2500;
+  background: #000;
+  display: flex; align-items: center; justify-content: center;
+}
+.photo-viewer.hidden { display: none; }
+.photo-viewer-stage {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  overflow: hidden; touch-action: none; /* ピンチ・ドラッグを自前で処理する */
+}
+.photo-viewer-stage img {
+  max-width: 100%; max-height: 100%;
+  user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+  transform-origin: center center; will-change: transform;
+}
+.photo-viewer.zoomed .photo-viewer-stage { cursor: grab; }
+.photo-viewer-close {
+  position: absolute; top: calc(env(safe-area-inset-top, 0px) + 12px); right: 12px; z-index: 1;
+  width: 44px; height: 44px; border-radius: 50%; border: none;
+  background: rgba(255,255,255,0.2); color: #fff; font-size: 1.25rem; cursor: pointer;
+}
+.photo-viewer-hint {
+  position: absolute; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
+  text-align: center; color: rgba(255,255,255,0.7); font-size: 0.75rem; pointer-events: none;
+}
