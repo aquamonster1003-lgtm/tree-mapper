@@ -199,5 +199,35 @@ console.log('\n[端末のデータをアップロード]');
   check('失敗後にやり直すと、残りだけが送られる', res5.pins === 1 && res5.maps === 0 && res5.areas === 0 && f2.tables.pins.length === 2, JSON.stringify(res5));
 }
 
+
+console.log('\n[クラウドのデータを書き出す]');
+{
+  const f = makeFake();
+  const r = createCloudRepository(f.client, { toDataUrl: async () => PNG });
+  await r.saveMap({ id: 'map_1', name: '本番のマップ', image: PNG });
+  await r.saveMap({ id: 'map_2', name: '削除するマップ', image: PNG });
+  await r.savePin({ id: 'pin_1', mapId: 'map_1', x: 1, y: 2, group: 'A', species: 'keyaki', label: '写真あり', photo: JPG });
+  await r.savePin({ id: 'pin_2', mapId: 'map_1', x: 3, y: 4, group: 'B', species: 'sakura', label: '写真なし', photo: null });
+  await r.savePin({ id: 'pin_3', mapId: 'map_1', x: 5, y: 6, group: 'B', species: 'sakura', label: '削除する', photo: null });
+  await r.saveArea({ id: 'area_1', mapId: 'map_1', type: 'line', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }], group: 'A', label: '生垣', color: '#22c55e' });
+  await r.deletePin('pin_3');
+  await r.deleteMap('map_2');
+  const out = await r.exportAll();
+  check('書き出し: 削除していないマップ・ピン・エリアだけ', out.maps.length === 1 && out.pins.length === 2 && out.areas.length === 1, `${out.maps.length}/${out.pins.length}/${out.areas.length}`);
+  check('書き出し: マップ画像・写真が Data URL で入る', out.maps[0].image === PNG && out.pins.find((p) => p.id === 'pin_1').photo === PNG);
+  check('書き出し: 写真なしは null', out.pins.find((p) => p.id === 'pin_2').photo === null);
+  check('書き出し: 端末内版と同じ形 (camelCase・数値の時刻)', out.pins[0].mapId === 'map_1' && out.pins[0].group === 'A' && typeof out.pins[0].createdAt === 'number' && out.areas[0].points.length === 2);
+
+  // 書き出したものを、そのまま別のクラウドにアップロードできる (往復)
+  const f2 = makeFake(); const r2 = createCloudRepository(f2.client);
+  const res = await r2.uploadLocalToCloud(out);
+  check('書き出し→アップロードの往復で、同じ件数が入る', res.maps === 1 && res.pins === 2 && res.areas === 1 && res.failed.length === 0, JSON.stringify(res));
+
+  // 画像が取れないときは、黙って欠けた書き出しを作らない
+  f.files['pin-photos'].delete('pin_1.jpg');
+  let err = null; try { await r.exportAll(); } catch (e) { err = e.message; }
+  check('画像を取得できないときは、例外にする (欠けたバックアップを作らない)', !!err && err.includes('画像を取得できない'), err);
+}
+
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);
 process.exit(failures ? 1 : 0);

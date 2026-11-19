@@ -5,7 +5,7 @@ import {
   listPins, savePin, deletePin,
   listAreas, saveArea, deleteArea,
   listAllGroups, getSetting, setSetting, removeSetting,
-  exportAll, replaceAll, isCloud, uploadLocalToCloud
+  exportAll, exportLocalAll, replaceAll, isCloud, uploadLocalToCloud
 } from './repository.js';
 import { checkAccess, bindAuthUi } from './auth.js';
 
@@ -157,7 +157,7 @@ let state = {
 const UPLOAD_ASKED_KEY = 'tm_cloudUploadAsked';
 
 async function runCloudUpload(local) {
-  local = local || await exportAll();
+  local = local || await exportLocalAll();
   const status = document.getElementById('cloud-upload-status');
   const btn = document.getElementById('cloud-upload-btn');
   btn.disabled = true;
@@ -187,6 +187,7 @@ async function runCloudUpload(local) {
 async function setupCloudUpload() {
   document.getElementById('cloud-upload-section').classList.remove('hidden');
   document.getElementById('import-section').classList.add('hidden'); // 共有データを丸ごと上書きする操作は出さない
+  document.getElementById('export-note').textContent = 'クラウドにある全員のデータ (マップ・ピン・エリア・写真) を、ファイルに保存します。バックアップ用です。';
   document.getElementById('cloud-upload-btn').addEventListener('click', async () => {
     if (!confirm('この端末のデータをクラウドにアップロードします。よろしいですか?')) return;
     await runCloudUpload();
@@ -217,7 +218,7 @@ async function setupCloudUpload() {
 
   // 初回: この端末にデータがあれば、一度だけ案内する
   if (localStorage.getItem(UPLOAD_ASKED_KEY)) return;
-  const local = await exportAll();
+  const local = await exportLocalAll();
   if (local.maps.length === 0) return;
   const cloudMaps = await listMaps();
   const msg = `この端末に、マップ${local.maps.length}件・ピン${local.pins.length}件・エリア${local.areas.length}件のデータがあります。\n共有のクラウドにアップロードしますか?\n(端末内のデータは消えません。あとで設定画面からもできます)`
