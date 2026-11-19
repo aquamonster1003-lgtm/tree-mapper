@@ -7,6 +7,7 @@ Tree Mapper を複数人で共有するためのバックエンド (Supabase) �
 |---|---|
 | `migrations/*.sql` | テーブル・権限 (RLS)・トリガー・画像の保存先を作る SQL |
 | `tests/schema.test.mjs` | 上の SQL を手元で実行して、権限や制約が意図どおりか確かめるテスト |
+| `tests/cloud-repository.test.mjs` | アプリのクラウド保存処理 (`src/cloud-repository.js`) を、メモリ上の代用品で確かめるテスト (`node supabase/tests/cloud-repository.test.mjs`) |
 
 ## 権限の考え方
 

@@ -4,7 +4,7 @@ import {
   listPins, savePin, deletePin,
   listAreas, saveArea, deleteArea,
   listAllGroups, getSetting, setSetting, removeSetting,
-  exportAll, replaceAll
+  exportAll, replaceAll, isCloud, uploadLocalToCloud
 } from './repository.js';
 import { checkAccess, bindAuthUi } from './auth.js';
 
@@ -149,6 +149,63 @@ let state = {
 };
 
 // --- Boot ---
+
+// --- クラウド版: この端末のデータをアップロード ---
+const UPLOAD_ASKED_KEY = 'tm_cloudUploadAsked';
+
+async function runCloudUpload() {
+  const local = await exportAll();
+  const status = document.getElementById('cloud-upload-status');
+  const btn = document.getElementById('cloud-upload-btn');
+  btn.disabled = true;
+  ui.loader.classList.remove('hidden');
+  try {
+    const result = await uploadLocalToCloud(local, (done, total) => {
+      status.textContent = `アップロード中... ${done} / ${total}`;
+    });
+    const lines = [`マップ ${result.maps}件、ピン ${result.pins}件(写真 ${result.photos}枚)、エリア ${result.areas}件をアップロードしました。`];
+    if (result.remappedMaps) lines.push(`ID が重複した別のマップ ${result.remappedMaps}件は、新しい ID で追加しました。`);
+    if (result.skipped) lines.push(`マップが見つからないデータ ${result.skipped}件は、送りませんでした。`);
+    if (result.failed.length) lines.push(`失敗: ${result.failed.slice(0, 5).join('、')}${result.failed.length > 5 ? ` ほか${result.failed.length - 5}件` : ''}。もう一度実行すると、残りだけ送れます。`);
+    status.textContent = lines.join('\n');
+    status.style.whiteSpace = 'pre-line';
+    if (!result.failed.length) localStorage.setItem(UPLOAD_ASKED_KEY, 'done');
+    return result;
+  } catch (err) {
+    console.error(err);
+    status.textContent = 'アップロードに失敗しました。通信状況を確認して、もう一度お試しください。';
+    return null;
+  } finally {
+    btn.disabled = false;
+    ui.loader.classList.add('hidden');
+  }
+}
+
+async function setupCloudUpload() {
+  document.getElementById('cloud-upload-section').classList.remove('hidden');
+  document.getElementById('import-section').classList.add('hidden'); // 共有データを丸ごと上書きする操作は出さない
+  document.getElementById('cloud-upload-btn').addEventListener('click', async () => {
+    if (!confirm('この端末のデータをクラウドにアップロードします。よろしいですか?')) return;
+    await runCloudUpload();
+    state.maps = await listMaps();
+    if (state.activeMapId) await loadMapData(state.activeMapId); else await loadInitialData();
+  });
+
+  // 初回: この端末にデータがあれば、一度だけ案内する
+  if (localStorage.getItem(UPLOAD_ASKED_KEY)) return;
+  const local = await exportAll();
+  if (local.maps.length === 0) return;
+  const cloudMaps = await listMaps();
+  const msg = `この端末に、マップ${local.maps.length}件・ピン${local.pins.length}件・エリア${local.areas.length}件のデータがあります。\n共有のクラウドにアップロードしますか?\n(端末内のデータは消えません。あとで設定画面からもできます)`
+    + (cloudMaps.length ? `\n\n※ クラウドには、すでに${cloudMaps.length}件のマップがあります。同じデータなら重複しません。` : '');
+  if (confirm(msg)) {
+    ui.settingsModal.classList.remove('hidden');
+    await runCloudUpload();
+  } else {
+    localStorage.setItem(UPLOAD_ASKED_KEY, 'skipped');
+  }
+}
+
 async function init() {
   bindAuthUi();
   const access = await checkAccess();
@@ -158,6 +215,7 @@ async function init() {
     await initRepository();
     await checkMigration();
     await migrateVisibleToHiddenGroups();
+    if (isCloud) await setupCloudUpload();
     await loadInitialData();
   } catch (err) {
     console.error('DB Initialization failed', err);
@@ -400,14 +458,19 @@ ui.resetMapBtn.addEventListener('click', async () => {
   if (!state.activeMapId) return;
   if (confirm('このマップ画像とすべてのピン・生垣エリアを完全に削除しますか？\n（この操作は取り消せません）')) {
     ui.loader.classList.remove('hidden');
-    await deleteMap(state.activeMapId);
+    try {
+      await deleteMap(state.activeMapId);
 
-    state.maps = await listMaps();
-    if (state.maps.length > 0) {
-      await loadMapData(state.maps[0].id);
-    } else {
-      await removeSetting('activeMapId');
-      showUploadScreen();
+      state.maps = await listMaps();
+      if (state.maps.length > 0) {
+        await loadMapData(state.maps[0].id);
+      } else {
+        await removeSetting('activeMapId');
+        showUploadScreen();
+      }
+    } catch (err) {
+      console.error(err);
+      alert('削除に失敗しました。通信状況を確認して、もう一度お試しください。');
     }
     ui.loader.classList.add('hidden');
   }
@@ -1087,7 +1150,7 @@ ui.areaForm.addEventListener('submit', async (e) => {
       }
     } catch(err) {
       console.error(err);
-      alert('【保存エラー】エリアの保存に失敗しました。');
+      alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】エリアの保存に失敗しました。');
     } finally {
       ui.loader.classList.add('hidden');
     }
@@ -1102,12 +1165,17 @@ ui.areaForm.addEventListener('submit', async (e) => {
 ui.areaModalDelete.addEventListener('click', async () => {
   if (confirm('このエリアを削除しますか？')) {
     ui.loader.classList.remove('hidden');
-    await deleteArea(state.activeAreaId);
-    state.areas = state.areas.filter(a => a.id !== state.activeAreaId);
-    renderAreas();
-    renderFilterPanel();
+    try {
+      await deleteArea(state.activeAreaId);
+      state.areas = state.areas.filter(a => a.id !== state.activeAreaId);
+      renderAreas();
+      renderFilterPanel();
+      closeAreaModal();
+    } catch (err) {
+      console.error(err);
+      alert('削除に失敗しました。通信状況を確認して、もう一度お試しください。');
+    }
     ui.loader.classList.add('hidden');
-    closeAreaModal();
   }
 });
 
@@ -1295,7 +1363,7 @@ ui.pinForm.addEventListener('submit', async (e) => {
       }
     } catch(err) {
       console.error(err);
-      alert('【保存エラー】端末の容量不足、またはLINE等のアプリ内ブラウザ制限の可能性があります。SafariやChromeブラウザで開き直してください。');
+      alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】端末の容量不足、またはLINE等のアプリ内ブラウザ制限の可能性があります。SafariやChromeブラウザで開き直してください。');
     } finally {
       ui.loader.classList.add('hidden');
     }
@@ -1312,11 +1380,16 @@ ui.modalBackdrop.addEventListener('click', (e) => { if (e.target === ui.modalBac
 ui.modalDelete.addEventListener('click', async () => {
   if (confirm('このピンを削除しますか？')) {
     ui.loader.classList.remove('hidden');
-    await deletePin(state.activePinId);
-    state.pins = state.pins.filter(p => p.id !== state.activePinId);
-    renderPins();
+    try {
+      await deletePin(state.activePinId);
+      state.pins = state.pins.filter(p => p.id !== state.activePinId);
+      renderPins();
+      closeModal();
+    } catch (err) {
+      console.error(err);
+      alert('削除に失敗しました。通信状況を確認して、もう一度お試しください。');
+    }
     ui.loader.classList.add('hidden');
-    closeModal();
   }
 });
 
