@@ -17,9 +17,9 @@ function makeFake() {
   const now = () => new Date(clock += 1000).toISOString();
 
   const builder = (table) => {
-    let op = 'select', payload, filters = [], orders = [], range, single = false;
+    let op = 'select', payload, filters = [], orders = [], range, single = false, returning = false;
     const q = {
-      select() { return q; },
+      select() { if (op !== 'select') returning = true; return q; }, // 書き込みのあとの select() = 更新後の行を返す
       upsert(p) { op = 'upsert'; payload = p; return q; },
       insert(p) { op = 'insert'; payload = p; return q; },
       update(p) { op = 'update'; payload = p; return q; },
@@ -46,10 +46,10 @@ function makeFake() {
         const i = rows.findIndex((r) => r.id === payload.id);
         if (i >= 0) rows[i] = { ...rows[i], ...payload, updated_at: now() };
         else rows.push({ created_at: now(), updated_at: now(), deleted_at: null, photo_path: null, image_path: null, ...payload });
-        return { data: null, error: null };
+        return { data: returning ? [structuredClone(rows.find((r) => r.id === payload.id))] : null, error: null };
       }
       let sel = rows.filter((r) => filters.every((f) => f(r)));
-      if (op === 'update') { sel.forEach((r) => Object.assign(r, payload, { updated_at: now() })); return { data: null, error: null }; }
+      if (op === 'update') { sel.forEach((r) => Object.assign(r, payload, { updated_at: now() })); return { data: returning ? sel.map((r) => structuredClone(r)) : null, error: null }; }
       for (const c of [...orders].reverse()) sel = [...sel].sort((a, b) => (a[c] > b[c] ? 1 : a[c] < b[c] ? -1 : 0));
       if (range) sel = sel.slice(range[0], range[1] + 1);
       // 本物の API と同じく、行のコピーを返す (後の更新が取得済みの値に影響しない)
@@ -283,6 +283,52 @@ console.log('\n[共有設定のアップロード]');
   check('再実行しても何も増えない', again.species === 0 && again.groups === 0 && again.existing === 2);
   const empty = await r.uploadSharedSettings({});
   check('設定が無いファイルでも、例外にならない', empty.species === 0 && empty.groups === 0);
+}
+
+
+console.log('\n[他の人の変更を上書きしない (衝突検出)]');
+{
+  const f = makeFake(); const r = createCloudRepository(f.client);
+  await r.saveMap({ id: 'map_1', name: 'm', image: PNG });
+  const pin = { id: 'pin_1', mapId: 'map_1', x: 1, y: 2, group: 'A', species: 'keyaki', label: '最初', photo: null };
+  await r.savePin(pin);
+  check('新規保存でサーバー上の版 (_v) を受け取る', typeof pin._v === 'string' && pin._v === f.tables.pins[0].updated_at);
+
+  // AさんとBさんが、同じ版のピンを開く
+  const a = (await r.listPins('map_1'))[0]; const b = { ...a };
+  check('一覧のピンに _v が付いている', a._v === f.tables.pins[0].updated_at);
+  a.label = 'Aさんの編集';
+  await r.savePin(a);
+  check('Aさん: 開いた版のままなので保存できる。版が進む', f.tables.pins[0].label === 'Aさんの編集' && a._v !== b._v && a._v === f.tables.pins[0].updated_at);
+  b.label = 'Bさんの編集';
+  let err = null; try { await r.savePin(b); } catch (e) { err = e; }
+  check('Bさん: 古い版からの保存は ConflictError', err && err.name === 'ConflictError', err && err.name);
+  check('Bさん: Aさんの変更は消えない', f.tables.pins[0].label === 'Aさんの編集');
+
+  // 続けて編集 (自分の保存で版が進んでいるので、2回目も保存できる)
+  a.label = 'Aさんの2回目';
+  await r.savePin(a);
+  check('自分で続けて保存できる (版が追従する)', f.tables.pins[0].label === 'Aさんの2回目');
+
+  // 他の人が削除したピンは、保存できない (復活させない)
+  const c = (await r.listPins('map_1'))[0];
+  await r.deletePin('pin_1');
+  c.label = '削除後の編集';
+  let err2 = null; try { await r.savePin(c); } catch (e) { err2 = e; }
+  check('他の人が削除したピンへの保存は ConflictError、復活しない', err2?.name === 'ConflictError' && !!f.tables.pins[0].deleted_at && f.tables.pins[0].label !== '削除後の編集');
+
+  // エリアも同じ
+  const area = { id: 'area_1', mapId: 'map_1', type: 'line', points: [{ x: 1, y: 1 }, { x: 2, y: 2 }], group: 'A', label: '元', color: '#22c55e' };
+  await r.saveArea(area);
+  const x = (await r.listAreas('map_1'))[0]; const y = { ...x };
+  x.label = 'X'; await r.saveArea(x);
+  y.label = 'Y';
+  let err3 = null; try { await r.saveArea(y); } catch (e) { err3 = e; }
+  check('エリアも、古い版からの保存は ConflictError で、先の変更を消さない', err3?.name === 'ConflictError' && f.tables.areas[0].label === 'X');
+
+  // 新規 (版なし) は、従来どおり保存できる
+  await r.savePin({ id: 'pin_new', mapId: 'map_1', x: 9, y: 9, group: 'A', species: 'keyaki', label: '新規', photo: null });
+  check('新規のピンは、版なしで保存できる', f.tables.pins.some((p) => p.id === 'pin_new'));
 }
 
 console.log(`\n${failures === 0 ? 'ALL PASSED' : failures + ' FAILED'}`);

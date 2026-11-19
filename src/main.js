@@ -5,7 +5,7 @@ import {
   listPins, savePin, deletePin,
   listAreas, saveArea, deleteArea,
   listAllGroups, getSetting, setSetting, removeSetting,
-  exportAll, exportLocalAll, replaceAll, isCloud, uploadLocalToCloud,
+  exportAll, exportLocalAll, replaceAll, isCloud, isConflict, uploadLocalToCloud,
   loadSharedSettings, addSpecies, addGroup, uploadSharedSettings
 } from './repository.js';
 import { checkAccess, bindAuthUi } from './auth.js';
@@ -141,6 +141,7 @@ let state = {
   hiddenGroups: JSON.parse(localStorage.getItem('tm_hiddenGroups') || '[]'),
   transform: { x: 0, y: 0, scale: 1 },
   activePinId: null,
+  activePinBase: null, // 編集を開いた時点の、サーバー上の版 (他の人の変更の検出用)
   tempClickPos: null,
   currentPinPhoto: null,
   selectedNewColor: null,
@@ -149,6 +150,7 @@ let state = {
   hedgeMode: null, // null | 'line' | 'polygon'
   currentPoints: [], // drawing in progress: [{x, y}]
   activeAreaId: null, // editing/viewing area
+  activeAreaBase: null,
   selectedAreaColor: '#22c55e'
 };
 
@@ -356,6 +358,74 @@ async function loadMapData(mapId) {
     renderAreas();
     ui.loader.classList.add('hidden');
   };
+}
+
+// --- 最新の状態に更新 (クラウド版) ---
+// リアルタイム同期はしない。アプリに戻ったとき・「更新」ボタン・保存の衝突時に、まとめて読み直す。
+const AUTO_REFRESH_MIN_MS = 10000;
+let refreshing = false;
+let lastRefresh = Date.now();
+let toastTimer = null;
+
+function showToast(text) {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = text;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+function isBusyForAutoRefresh() {
+  const open = (el) => el && !el.classList.contains('hidden');
+  return open(ui.modalBackdrop) || open(ui.areaModalBackdrop) || open(ui.loader)
+    || open(document.getElementById('settings-modal-backdrop')) || open(document.getElementById('photo-viewer'))
+    || !!state.hedgeMode;
+}
+
+async function refreshFromCloud({ manual = false, quiet = false } = {}) {
+  if (!isCloud || refreshing) return;
+  if (!state.activeMapId && state.maps.length === 0 && !manual) return;
+  if (!manual && (isBusyForAutoRefresh() || Date.now() - lastRefresh < AUTO_REFRESH_MIN_MS)) return;
+  refreshing = true;
+  const btn = document.getElementById('refresh-btn');
+  if (btn) btn.classList.add('spinning');
+  try {
+    await refreshSharedSettings();
+    state.maps = await listMaps();
+    const stillThere = state.activeMapId && state.maps.some(m => m.id === state.activeMapId);
+    if (state.activeMapId && !stillThere) {
+      // 見ていたマップが、他の人に削除された
+      if (state.maps.length) { await loadMapData(state.maps[0].id); showToast('見ていたマップは削除されたため、別のマップを開きました'); }
+      else { showUploadScreen(); }
+    } else if (state.activeMapId) {
+      const [pins, areas] = await Promise.all([listPins(state.activeMapId), listAreas(state.activeMapId)]);
+      state.pins = pins; state.areas = areas;
+      updateMapSelector();
+      renderSelectOptions();
+      renderFilterPanel();
+      renderPins();
+      renderAreas();
+      if (!quiet) showToast('最新の状態に更新しました');
+    } else if (state.maps.length) {
+      await loadMapData(state.maps[0].id); // 最初のマップが他の人に追加された
+    }
+    lastRefresh = Date.now();
+  } catch (err) {
+    console.warn('更新に失敗しました', err);
+    if (manual) showToast('更新できませんでした。通信状況を確認してください');
+  } finally {
+    refreshing = false;
+    if (btn) btn.classList.remove('spinning');
+  }
+}
+
+if (isCloud) {
+  document.getElementById('refresh-btn')?.classList.remove('hidden');
+  document.getElementById('refresh-btn')?.addEventListener('click', () => refreshFromCloud({ manual: true }));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refreshFromCloud(); });
+  window.addEventListener('online', () => refreshFromCloud());
+  window.addEventListener('pageshow', (e) => { if (e.persisted) refreshFromCloud(); });
 }
 
 function showUploadScreen() {
@@ -1161,6 +1231,7 @@ function openAreaModal(areaId = null) {
   }
 
   state.activeAreaId = areaId;
+  state.activeAreaBase = area ? (area._v || null) : null;
   ui.areaModalBackdrop.classList.remove('hidden');
   ui.areaNewGroupWrapper.style.display = 'none';
 
@@ -1188,6 +1259,7 @@ function openAreaModal(areaId = null) {
 function closeAreaModal() {
   ui.areaModalBackdrop.classList.add('hidden');
   state.activeAreaId = null;
+  state.activeAreaBase = null;
 }
 
 ui.areaModalCancel.addEventListener('click', () => {
@@ -1223,14 +1295,14 @@ ui.areaForm.addEventListener('submit', async (e) => {
 
   const label = ui.areaLabel.value.trim();
   let areaData;
+  const editing = !!state.activeAreaId;
 
-  if (state.activeAreaId) {
-    const index = state.areas.findIndex(a => a.id === state.activeAreaId);
-    if (index !== -1) {
-      areaData = state.areas[index];
-      areaData.group = group;
-      areaData.label = label;
-      areaData.color = state.selectedAreaColor;
+  if (editing) {
+    const current = state.areas.find(a => a.id === state.activeAreaId);
+    if (current) {
+      // 保存に成功するまで一覧の中身は変えないよう、コピーを編集する
+      areaData = { ...current, group, label, color: state.selectedAreaColor };
+      if (isCloud) areaData._v = state.activeAreaBase; // 開いた時点の版。これが古ければ保存されない
     }
   } else {
     areaData = {
@@ -1244,25 +1316,40 @@ ui.areaForm.addEventListener('submit', async (e) => {
     };
   }
 
+  let conflict = false;
   if (areaData) {
     try {
       ui.loader.classList.remove('hidden');
       await saveArea(areaData);
-      if (!state.activeAreaId) {
+      if (editing) {
+        const i = state.areas.findIndex(a => a.id === areaData.id);
+        if (i !== -1) state.areas[i] = areaData; else state.areas.push(areaData);
+      } else {
         state.areas.push(areaData);
       }
     } catch(err) {
       console.error(err);
-      alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】エリアの保存に失敗しました。');
+      if (isConflict(err)) {
+        conflict = true;
+      } else {
+        alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】エリアの保存に失敗しました。');
+      }
     } finally {
       ui.loader.classList.add('hidden');
     }
+  } else if (editing) {
+    alert('このエリアは見つかりませんでした。最新の内容を読み込みます。');
+    conflict = true;
   }
 
   renderFilterPanel();
   renderAreas();
   closeAreaModal();
   exitHedgeMode();
+  if (conflict) {
+    alert('このエリアは、あなたが開いたあとに、ほかの人が変更しました。保存せずに、最新の内容を読み込みます。必要なら、もう一度編集してください。');
+    await refreshFromCloud({ manual: true, quiet: true });
+  }
 });
 
 ui.areaModalDelete.addEventListener('click', async () => {
@@ -1364,6 +1451,7 @@ function openModal(pinId = null, pos = null) {
   }
 
   state.activePinId = pinId;
+  state.activePinBase = pin ? (pin._v || null) : null;
   ui.modalBackdrop.classList.remove('hidden');
   ui.newGroupWrapper.style.display = 'none';
   ui.newSpeciesGroup.style.display = 'none';
@@ -1395,6 +1483,7 @@ function openModal(pinId = null, pos = null) {
 function closeModal() {
   ui.modalBackdrop.classList.add('hidden');
   state.activePinId = null;
+  state.activePinBase = null;
   state.tempClickPos = null;
   state.currentPinPhoto = null;
 }
@@ -1435,14 +1524,13 @@ ui.pinForm.addEventListener('submit', async (e) => {
 
   const label = ui.treeLabel.value.trim();
   let pinData;
-  if (state.activePinId) {
-    const index = state.pins.findIndex(p => p.id === state.activePinId);
-    if (index !== -1) {
-      pinData = state.pins[index];
-      pinData.group = group;
-      pinData.species = species;
-      pinData.label = label;
-      pinData.photo = state.currentPinPhoto;
+  const editing = !!state.activePinId;
+  if (editing) {
+    const current = state.pins.find(p => p.id === state.activePinId);
+    if (current) {
+      // 保存に成功するまで一覧の中身は変えないよう、コピーを編集する
+      pinData = { ...current, group, species, label, photo: state.currentPinPhoto };
+      if (isCloud) pinData._v = state.activePinBase; // 開いた時点の版。これが古ければ保存されない
     }
   } else if (state.tempClickPos) {
     pinData = {
@@ -1456,26 +1544,39 @@ ui.pinForm.addEventListener('submit', async (e) => {
       photo: state.currentPinPhoto
     };
   }
-  
+
+  let conflict = false;
   if (pinData) {
     try {
       ui.loader.classList.remove('hidden');
       await savePin(pinData);
-      
-      if (!state.activePinId && state.tempClickPos) {
+      if (editing) {
+        const i = state.pins.findIndex(p => p.id === pinData.id);
+        if (i !== -1) state.pins[i] = pinData; else state.pins.push(pinData);
+      } else {
         state.pins.push(pinData);
       }
     } catch(err) {
       console.error(err);
-      alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】端末の容量不足、またはLINE等のアプリ内ブラウザ制限の可能性があります。SafariやChromeブラウザで開き直してください。');
+      if (isConflict(err)) {
+        conflict = true;
+      } else {
+        alert(isCloud ? '【保存エラー】クラウドに保存できませんでした。通信状況を確認して、もう一度お試しください。' : '【保存エラー】端末の容量不足、またはLINE等のアプリ内ブラウザ制限の可能性があります。SafariやChromeブラウザで開き直してください。');
+      }
     } finally {
       ui.loader.classList.add('hidden');
     }
+  } else if (editing) {
+    conflict = true;
   }
 
   renderFilterPanel();
   renderPins();
   closeModal();
+  if (conflict) {
+    alert('このピンは、あなたが開いたあとに、ほかの人が変更または削除しました。保存せずに、最新の内容を読み込みます。必要なら、もう一度編集してください。');
+    await refreshFromCloud({ manual: true, quiet: true });
+  }
 });
 
 ui.modalCancel.addEventListener('click', closeModal);

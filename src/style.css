@@ -647,3 +647,14 @@ h1.title { font-size: 2rem; margin-bottom: 0.5rem; font-weight: 700; color: #158
   position: absolute; left: 0; right: 0; bottom: calc(env(safe-area-inset-bottom, 0px) + 12px);
   text-align: center; color: rgba(255,255,255,0.7); font-size: 0.75rem; pointer-events: none;
 }
+
+/* 更新ボタン・通知 */
+#refresh-btn.spinning svg { animation: tm-spin 0.8s linear infinite; }
+@keyframes tm-spin { to { transform: rotate(360deg); } }
+.toast {
+  position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  transform: translate(-50%, 12px); opacity: 0; pointer-events: none;
+  background: rgba(17, 24, 39, 0.92); color: #fff; padding: 10px 16px; border-radius: 999px;
+  font-size: 0.9rem; z-index: 9999; transition: opacity 0.2s, transform 0.2s; max-width: 90vw; text-align: center;
+}
+.toast.show { opacity: 1; transform: translate(-50%, 0); }

@@ -12,6 +12,8 @@
   <body>
     <div id="app" class="app-container">
 
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
       <div id="loading-overlay" class="loader-backdrop hidden">
         <div class="loader-spinner"></div>
       </div>
@@ -40,6 +42,9 @@
               <select id="map-selector" class="map-select" aria-label="マップの選択"></select>
             </div>
             <div class="header-controls">
+              <button id="refresh-btn" class="icon-btn hidden" title="最新の状態に更新" aria-label="最新の状態に更新">
+                <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              </button>
               <button id="filter-btn" class="icon-btn" title="表示グループ切り替え">
                 <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>
               </button>

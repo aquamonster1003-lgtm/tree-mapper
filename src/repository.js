@@ -11,6 +11,9 @@ const impl = cloud || local;
 
 export const isCloud = !!cloud;
 
+// 保存しようとしたデータが、開いたあとに他の人に変更・削除されていた (クラウド版のみ起こる)
+export const isConflict = (err) => !!err && err.name === 'ConflictError';
+
 export const {
   newId, initRepository,
   listAllGroups, getSetting, setSetting, removeSetting,
