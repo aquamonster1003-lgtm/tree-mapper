@@ -11,6 +11,11 @@ const PAGE = 1000; // Supabase の 1 回の取得上限
 const MAP_BUCKET = 'map-images';
 const PIN_BUCKET = 'pin-photos';
 
+// 保存しようとしたデータが、開いたあとに他の人に変更・削除されていたとき
+export class ConflictError extends Error {
+  constructor(what) { super(`${what} was changed by someone else`); this.name = 'ConflictError'; }
+}
+
 const ms = (v) => (v ? Date.parse(v) : undefined);
 const iso = (v) => (v ? new Date(v).toISOString() : undefined);
 const isDataUrl = (v) => typeof v === 'string' && v.startsWith('data:');
@@ -114,7 +119,8 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
     id: r.id, mapId: r.map_id, x: r.x, y: r.y,
     group: r.group_name, species: r.species, label: r.label,
     photo: r.photo_path ? (urls.get(r.photo_path) || null) : null,
-    createdAt: ms(r.created_at), updatedAt: ms(r.updated_at)
+    createdAt: ms(r.created_at), updatedAt: ms(r.updated_at),
+    _v: r.updated_at // サーバー上の版 (updated_at の文字列そのまま)。保存時に、他の人の変更を上書きしないための照合に使う
   });
 
   async function listPins(mapId) {
@@ -136,11 +142,24 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
     return row;
   }
 
-  async function savePin(pin) {
-    must(await sb.from('pins').upsert(await pinRow(pin), { onConflict: 'id' }));
+  // 開いたときの版 (pin._v) が、いまもサーバーと同じときだけ更新する。違えば ConflictError
+  async function writeRow(table, item, row) {
+    let rows;
+    if (item._v) {
+      rows = must(await sb.from(table).update(row).eq('id', item.id).eq('updated_at', item._v).select('updated_at'));
+      if (!rows.length) throw new ConflictError(table);
+    } else {
+      rows = must(await sb.from(table).upsert(row, { onConflict: 'id' }).select('updated_at'));
+    }
     const now = Date.now();
-    if (!pin.createdAt) pin.createdAt = now;
-    pin.updatedAt = now;
+    if (!item.createdAt) item.createdAt = now;
+    const version = rows[0]?.updated_at;
+    item.updatedAt = version ? ms(version) : now;
+    if (version) item._v = version;
+  }
+
+  async function savePin(pin) {
+    await writeRow('pins', pin, await pinRow(pin));
   }
 
   async function deletePin(id) {
@@ -153,7 +172,8 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
   const areaFromRow = (r) => ({
     id: r.id, mapId: r.map_id, type: r.type, points: r.points,
     group: r.group_name, label: r.label, color: r.color,
-    createdAt: ms(r.created_at), updatedAt: ms(r.updated_at)
+    createdAt: ms(r.created_at), updatedAt: ms(r.updated_at),
+    _v: r.updated_at
   });
 
   async function listAreas(mapId) {
@@ -172,10 +192,7 @@ export function createCloudRepository(sb, { toDataUrl = fetchAsDataUrl } = {}) {
   };
 
   async function saveArea(area) {
-    must(await sb.from('areas').upsert(areaRow(area), { onConflict: 'id' }));
-    const now = Date.now();
-    if (!area.createdAt) area.createdAt = now;
-    area.updatedAt = now;
+    await writeRow('areas', area, areaRow(area));
   }
 
   async function deleteArea(id) {
