@@ -202,6 +202,11 @@
             <label>この端末のデータをクラウドへ</label>
             <p style="font-size:0.75rem;color:var(--text-secondary);margin-bottom:0.5rem;line-height:1.3;">この端末に保存されているマップ・ピン・エリアを、共有のクラウドに追加します。何度実行しても重複しません。端末内のデータは消えません。</p>
             <button type="button" id="cloud-upload-btn" class="btn primary-btn" style="width:100%;justify-content:center;">アップロードする</button>
+            <label for="cloud-upload-file" class="btn secondary-btn" style="width:100%;justify-content:center;cursor:pointer;display:flex;align-items:center;margin-top:0.75rem;">
+              バックアップファイルからアップロード
+              <input type="file" id="cloud-upload-file" accept=".json,application/json" hidden />
+            </label>
+            <p style="font-size:0.75rem;color:var(--text-secondary);margin-top:0.25rem;line-height:1.3;">別のURLで書き出したファイル (.json) を、クラウドに追加します。クラウドに無いものだけを追加し、既存は上書きしません。</p>
             <p id="cloud-upload-status" style="font-size:0.8rem;margin-top:0.5rem;line-height:1.4;"></p>
           </div>
           <div class="form-group">

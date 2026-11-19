@@ -153,8 +153,8 @@ let state = {
 // --- クラウド版: この端末のデータをアップロード ---
 const UPLOAD_ASKED_KEY = 'tm_cloudUploadAsked';
 
-async function runCloudUpload() {
-  const local = await exportAll();
+async function runCloudUpload(local) {
+  local = local || await exportAll();
   const status = document.getElementById('cloud-upload-status');
   const btn = document.getElementById('cloud-upload-btn');
   btn.disabled = true;
@@ -187,6 +187,27 @@ async function setupCloudUpload() {
   document.getElementById('cloud-upload-btn').addEventListener('click', async () => {
     if (!confirm('この端末のデータをクラウドにアップロードします。よろしいですか?')) return;
     await runCloudUpload();
+    state.maps = await listMaps();
+    if (state.activeMapId) await loadMapData(state.activeMapId); else await loadInitialData();
+  });
+
+  // バックアップファイル (書き出した .json) からアップロード。別の URL (本番など) のデータを移すときに使う
+  document.getElementById('cloud-upload-file').addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    e.target.value = '';
+    if (!file) return;
+    let data;
+    try {
+      data = JSON.parse(await file.text());
+      if (!data || !Array.isArray(data.maps) || !Array.isArray(data.pins)) throw new Error('形式が違います');
+    } catch (err) {
+      alert('このファイルは読み込めません。「現在のデータを書き出し」で保存した .json を選んでください。');
+      return;
+    }
+    const alive = (list) => (list || []).filter((x) => x && !x.deletedAt);
+    const payload = { maps: alive(data.maps), pins: alive(data.pins), areas: alive(data.areas) };
+    if (!confirm(`ファイルの内容をクラウドに追加します。\nマップ${payload.maps.length}件・ピン${payload.pins.length}件・エリア${payload.areas.length}件\nよろしいですか?`)) return;
+    await runCloudUpload(payload);
     state.maps = await listMaps();
     if (state.activeMapId) await loadMapData(state.activeMapId); else await loadInitialData();
   });
