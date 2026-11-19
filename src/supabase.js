@@ -5,8 +5,8 @@ function normalizeUrl(v) {
   if (!v) return '';
   try { return new URL(String(v).trim()).origin; } catch { return ''; }
 }
-const url = normalizeUrl(import.meta.env.VITE_SUPABASE_URL);
-const key = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim(); // publishable キー (ブラウザに置いてよい)。secret/service_role は入れない
+const url = normalizeUrl(import.meta.env?.VITE_SUPABASE_URL);
+const key = (import.meta.env?.VITE_SUPABASE_ANON_KEY || '').trim(); // publishable キー (ブラウザに置いてよい)。secret/service_role は入れない
 
 // 環境変数が無いときは null。アプリは従来どおり端末内だけで動く。
 export const supabase = url && key
